@@ -10,7 +10,7 @@ from scipy.ndimage import gaussian_filter1d
 from sklearn.cluster import KMeans
 
 st.set_page_config(page_title="3D Object Measurement", layout="wide")
-st.title("📏 3D Object Measurement (Width, Length, Depth)")
+st.title("3D Object Measurement (Width, Length, Depth)")
 
 # --- Upload + Input Sidebar ---
 with st.sidebar:
