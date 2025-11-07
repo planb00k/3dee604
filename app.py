@@ -8,42 +8,40 @@ import matplotlib.pyplot as plt
 from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 from scipy.ndimage import gaussian_filter1d
 from sklearn.cluster import KMeans
-import pandas as pd
 import io
 
 st.set_page_config(page_title="3D Object Measurement", layout="wide")
-st.title("3D Object Measurement (Width, Length, Depth)")
+st.title("3D Object Measurement — Width, Length, Depth (Notebook-matching)")
 
-# ------------ Input form: get everything in one go ------------
-with st.form(key="params_form"):
+# ---------------- Input form (all inputs in one go) ----------------
+with st.form("params"):
     uploaded_file = st.file_uploader("Upload image (jpg/png/jpeg)", type=["jpg", "jpeg", "png"])
-    col1, col2, col3 = st.columns(3)
-    with col1:
+    c1, c2, c3 = st.columns(3)
+    with c1:
         relative_height_ratio = st.selectbox("Relative Height Ratio", ["low", "med", "high", "vhigh"], index=1)
         nom_of_objects = st.number_input("Number of objects", min_value=1, max_value=10, value=1)
-    with col2:
+    with c2:
         camh = st.number_input("Camera height (camh) [mm]", min_value=1, value=289)
         ref_h = st.number_input("Reference object height ref_h [mm]", min_value=1.0, value=100.0)
-    with col3:
+    with c3:
         show_intermediate = st.checkbox("Show intermediate debug visuals (optional)", value=False)
-        run_button = st.form_submit_button("Run measurement")
+        run = st.form_submit_button("Run")
 
-if not run_button:
-    st.info("Fill the form and press **Run measurement**")
+if not run:
+    st.info("Upload an image, configure parameters and click Run.")
     st.stop()
 
 if uploaded_file is None:
-    st.error("Please upload an image.")
+    st.error("Please upload an image to run the pipeline.")
     st.stop()
 
 # ---------------- Read image ----------------
 image = Image.open(uploaded_file).convert("RGB")
-initial_image = np.array(image)  # RGB
+initial_image = np.array(image)  # RGB (H,W,3)
 h_img, w_img = initial_image.shape[0], initial_image.shape[1]
 
-# ---------------- Model & Depth Estimation ----------------
-# NOTE: this uses the same model ID you used. If this errors in your environment,
-# switch to a CPU-safe model (e.g., "Intel/dpt-small") or ensure the model is cached.
+# ---------------- Load model & estimate depth ----------------
+# If this fails because of environment/model download issues, switch to a cached/local model or Intel/dpt-small
 model_id = "depth-anything/Depth-Anything-V2-Small-hf"
 processor = AutoImageProcessor.from_pretrained(model_id)
 model = AutoModelForDepthEstimation.from_pretrained(model_id)
@@ -55,29 +53,31 @@ with torch.no_grad():
 post_processed = processor.post_process_depth_estimation(outputs, target_sizes=[(image.height, image.width)])
 depth_result = post_processed[0]
 if "predicted_depth" in depth_result:
-    depth = depth_result["predicted_depth"].squeeze().cpu().numpy()
+    depth_raw = depth_result["predicted_depth"].squeeze().cpu().numpy()
 elif "depth" in depth_result:
-    depth = depth_result["depth"].squeeze().cpu().numpy()
+    depth_raw = depth_result["depth"].squeeze().cpu().numpy()
 else:
     st.error(f"Depth key missing. Keys: {depth_result.keys()}")
     st.stop()
 
-# Normalize for colormap & produce colorized depth map (magma)
-depth_norm = (depth - depth.min()) / (depth.max() - depth.min() + 1e-12)
+# ---------------- Create index map (0..255) consistent with colormap and visualization ----------------
+# Using normalized indices is how the notebook computed means from depth_color grayscale.
+depth_norm = (depth_raw - depth_raw.min()) / (depth_raw.max() - depth_raw.min() + 1e-12)
+depth_index = (depth_norm * 255.0).astype(np.float32)  # keep float for mean calculations
+# small median blur on index map to reduce isolated noisy pixels
+depth_index_blur = cv2.medianBlur(depth_index.astype(np.uint8), 3).astype(np.float32)
+
+# colorized depth (magma) for display (RGB)
 depth_magma = plt.cm.magma(depth_norm)
-depth_color_rgb = (depth_magma[:, :, :3] * 255).astype(np.uint8)   # RGB
-depth_color_bgr = cv2.cvtColor(depth_color_rgb, cv2.COLOR_RGB2BGR) # for OpenCV drawing
+depth_color_rgb = (depth_magma[:, :, :3] * 255).astype(np.uint8)
+depth_color_bgr = cv2.cvtColor(depth_color_rgb, cv2.COLOR_RGB2BGR)
 
-# optional small smoothing for stability (uncomment if very noisy)
-# depth = cv2.medianBlur((depth_norm*255).astype(np.uint8), 3).astype(np.float32) / 255.0
-
-# ---------------- Histogram, smoothing, minima detection ----------------
-gray = cv2.cvtColor(depth_color_bgr, cv2.COLOR_BGR2GRAY)
+# ---------------- Histogram & smoothed minima detection ----------------
+gray = (depth_index_blur).astype(np.uint8)  # use blurred index map for histogram
 hist = cv2.calcHist([gray], [0], None, [256], [0, 256]).flatten()
 sigma = 1.89
 smoothed_hist = gaussian_filter1d(hist, sigma=sigma)
 
-# set low_bound depending on relative height
 if relative_height_ratio == "low":
     low_bound = 110; error_rct = 1.08
 elif relative_height_ratio == "med":
@@ -96,14 +96,13 @@ else:
     maxima = np.array([])
     minima = np.array([low_bound])
 
-# If minima too few for KMeans, fallback to linspace
+# If minima are fewer than objects, fallback for KMeans
 if len(minima) < max(1, nom_of_objects):
-    fallback = np.linspace(low_bound, 255, num=max(1, nom_of_objects)).astype(int)
-    minima_for_kmeans = fallback
+    minima_for_kmeans = np.linspace(low_bound, 255, num=max(1, nom_of_objects)).astype(int)
 else:
     minima_for_kmeans = minima
 
-# KMeans clustering for thresholds (rounded to ints)
+# KMeans (rounded to int thresholds)
 try:
     kmeans = KMeans(n_clusters=nom_of_objects, random_state=42)
     kmeans.fit(minima_for_kmeans.reshape(-1,1))
@@ -111,14 +110,13 @@ try:
 except Exception:
     centers = np.linspace(low_bound, 255, num=nom_of_objects).astype(int)
 
-# DoG
-sigma1 = 1.8
-sigma2 = 3.0
+# DoG for plotting explanation
+sigma1 = 1.8; sigma2 = 3.0
 smoothed_hist1 = gaussian_filter1d(hist, sigma=sigma1)
 smoothed_hist2 = gaussian_filter1d(hist, sigma=sigma2)
 dog = smoothed_hist1 - smoothed_hist2
 
-# ---------------- Thresholding and mask creation ----------------
+# ---------------- Thresholding / Mask creation ----------------
 ground_truth = int(minima[0]) if len(minima) > 0 else int(low_bound)
 _, ground = cv2.threshold(gray, ground_truth, 255, cv2.THRESH_BINARY)
 
@@ -135,8 +133,8 @@ masks = {}
 if nom_of_objects > 1:
     for i in range(1, nom_of_objects):
         thresh_val = int(centers[i]) if i < len(centers) else int(centers[-1])
-        _, thresh = cv2.threshold(gray, thresh_val, 255, cv2.THRESH_BINARY)
-        binary = cv2.subtract(ground, thresh)
+        _, thr = cv2.threshold(gray, thresh_val, 255, cv2.THRESH_BINARY)
+        binary = cv2.subtract(ground, thr)
         masks[i] = small_area_remover(binary)
     sum_img = np.zeros(gray.shape, dtype=np.uint8)
     for i in range(1, nom_of_objects):
@@ -147,10 +145,9 @@ if nom_of_objects > 1:
 else:
     masks[0] = small_area_remover(ground)
 
-# create ordered mask list
 mask_list_for_display = [masks[i] for i in range(nom_of_objects)]
 
-# ---------------- helper functions (copied exactly from notebook) ----------------
+# ---------------- Helper functions (preserve notebook logic) ----------------
 def merge_colinear_lines(lines, angle_threshold=5, distance_threshold=20):
     if lines is None:
         return []
@@ -186,7 +183,6 @@ def merge_colinear_lines(lines, angle_threshold=5, distance_threshold=20):
     return merged_lines
 
 def sad(camheight, depthmap, mask, viewport=[3.4,3.6], f=6.5, imgsize=[h_img, w_img]):
-    img_loc = depthmap
     bing = mask
     corners = None
     try:
@@ -214,10 +210,8 @@ def sad(camheight, depthmap, mask, viewport=[3.4,3.6], f=6.5, imgsize=[h_img, w_
         merged_lines = merge_colinear_lines(linesP, 15, 400)
         for x1, y1, x2, y2 in merged_lines:
             cv2.line(imglm, (int(x1), int(y1)), (int(x2), int(y2)), (0,255,0), 2)
-    x_min = np.min(corners[:,:,0])
-    y_min = np.min(corners[:,:,1])
-    x_max = np.max(corners[:,:,0])
-    y_max = np.max(corners[:,:,1])
+    x_min = np.min(corners[:,:,0]); y_min = np.min(corners[:,:,1])
+    x_max = np.max(corners[:,:,0]); y_max = np.max(corners[:,:,1])
     return [int(x_max-x_min), int(y_max-y_min), (int(x_min), int(y_min)), (int(x_max), int(y_max))]
 
 def view(dx, dy, px, py, camh=300, cx=0.82, cy=0.79, f=6.5, viewport=[3.6,6.4]):
@@ -247,7 +241,6 @@ def vertical_text(img, text, org, font=cv2.FONT_HERSHEY_SIMPLEX, scale=1, color=
         M[1,2] += (nH / 2) - text_h // 2
         rotated = cv2.warpAffine(text_img, M, (nW, nH), flags=cv2.INTER_LINEAR, borderValue=(0,0,0))
         h, w = rotated.shape[:2]
-        # Safely paste rotated text into image
         x2 = min(max(0, x), img_out.shape[1] - w - 1)
         y2 = min(max(0, y), img_out.shape[0] - h - 1)
         mask_rot = rotated[:,:,0] > 0
@@ -257,63 +250,55 @@ def vertical_text(img, text, org, font=cv2.FONT_HERSHEY_SIMPLEX, scale=1, color=
         raise ValueError("method must be 'rotate' or 'stack'")
     return img_out
 
-def mean_depth(depth_img, lt_p, rb_p):
-    lx, ly = lt_p
-    rx, ry = rb_p
-    lx, rx = max(0,lx), min(depth_img.shape[1]-1, rx)
-    ly, ry = max(0,ly), min(depth_img.shape[0]-1, ry)
+def mean_depth(depth_arr, lt_p, rb_p):
+    lx, ly = lt_p; rx, ry = rb_p
+    lx, rx = max(0,lx), min(depth_arr.shape[1]-1, rx)
+    ly, ry = max(0,ly), min(depth_arr.shape[0]-1, ry)
     if lx >= rx or ly >= ry:
-        return float(depth_img.mean())
-    return float(np.mean(depth_img[ly:ry, lx:rx]))
+        return float(depth_arr.mean())
+    return float(np.mean(depth_arr[ly:ry, lx:rx]))
 
-# ---------------- Produce final annotated image exactly using original flow ----------------
+# ---------------- Final annotated image (match notebook order) ----------------
 bounding_boxes = []
 temp = depth_color_bgr.copy()
 
 for i in range(nom_of_objects):
     dx, dy, tl_p, br_p = sad(camheight=camh, depthmap=temp, mask=masks[i])
+    # NOTE: to match original notebook we pass px=h_img, py=w_img (that's how notebook used it)
     x_mm, y_mm = view(dx, dy, px=h_img, py=w_img, f=5.42, viewport=[6.144,8.6], camh=camh)
-    # draw same markers and boxes as original
     cv2.circle(temp, tl_p, 5, (0,255,0), 2)
     cv2.circle(temp, br_p, 5, (0,255,0), 2)
     cv2.rectangle(temp, tl_p, br_p, (0,255,0), 2)
     bounding_boxes.append([tl_p, br_p])
+    # Width text (horizontal)
     cv2.putText(temp, f"<Width {int(x_mm)}mm>", (tl_p[0], br_p[1]), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 3)
+    # Length text (vertical) - restored
     temp = vertical_text(temp, f"<Length {int(y_mm)}>mm", tl_p)
 
-# reference mean computed from first bounding box (preserve original intent)
-ref = mean_depth(depth, (0,0), bounding_boxes[0][0])
-values = np.linspace(0, 255, 256).reshape(1, -1)
-
-# ---------------- Located Indices bar & mean computation ----------------
-fig_bar, ax_bar = plt.subplots(figsize=(8,1.5))
-ax_bar.imshow(values, cmap='magma', aspect='auto')
+# ---------------- Depth calculation using index map (0..255) ----------------
+# Reference from the first bounding box top-left area (preserve original notebook intent)
+ref = mean_depth(depth_index_blur, (0,0), bounding_boxes[0][0])  # using index map for consistency
 mean_val = []
 min1 = 255.0
 for i in range(nom_of_objects):
-    depth_copy = depth.copy()
-    _01img = masks[i] // 255
+    _01img = (masks[i] // 255).astype(bool)
     if np.sum(_01img) == 0:
-        meanint = float(depth_copy.mean())
+        meanint = float(depth_index_blur.mean())
     else:
-        meanint = float(depth_copy[_01img==1].mean())
+        meanint = float(depth_index_blur[_01img].mean())
     if ref < meanint < min1:
         min1 = meanint
     mean_val.append(meanint)
-    ax_bar.axvline(x=meanint, color='lime', linewidth=3)
-ax_bar.axvline(x=ref, color='cyan', linewidth=3)
-ax_bar.set_yticks([])
-ax_bar.set_xticks([0,64,128,192,255])
-ax_bar.set_xticklabels(['0','64','128','192','255'])
-ax_bar.set_title('Located Indices')
-plt.tight_layout()
 
 scaler = float(min1 - ref) if (min1 - ref) != 0 else 1.0
-for i in range(nom_of_objects):
-    temph = (float(mean_val[i]-ref)/scaler) * ref_h
-    cv2.putText(temp, f"v Depth {int(temph)}mm v", org=bounding_boxes[i][0], fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=1, thickness=3, color=(255,255,0))
 
-# ---------------- Analysis figures: Histogram & DoG ----------------
+for i in range(nom_of_objects):
+    temph = (float(mean_val[i] - ref) / scaler) * ref_h
+    # Depth text (placed at top-left of bbox)
+    cv2.putText(temp, f"v Depth {int(temph)}mm v", bounding_boxes[i][0], cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,0), 3)
+
+# ---------------- Analysis plots ----------------
+# Histogram figure
 fig_hist, ax_hist = plt.subplots(figsize=(10,4))
 ax_hist.plot(hist, label='Original Histogram', alpha=0.5)
 ax_hist.plot(smoothed_hist, label=f'Gaussian Blurred Histogram (σ={sigma})', linewidth=2)
@@ -323,6 +308,7 @@ ax_hist.set_title('Grayscale Image Histogram and Gaussian-Smoothed Version')
 ax_hist.legend()
 plt.tight_layout()
 
+# DoG figure
 fig_dog, ax_dog = plt.subplots(figsize=(10,4))
 ax_dog.plot(smoothed_hist1, label=f'sigma={sigma1}')
 ax_dog.plot(smoothed_hist2, label=f'sigma={sigma2}')
@@ -331,27 +317,24 @@ ax_dog.set_title('DoG (Difference of Gaussians)')
 ax_dog.legend()
 plt.tight_layout()
 
-# ---------------- Create data table ----------------
-rows = []
-for i in range(nom_of_objects):
-    mean_depth_val = mean_val[i]
-    computed_height_mm = (float(mean_val[i]-ref)/scaler) * ref_h if scaler != 0 else ref_h
-    bbox = bounding_boxes[i]
-    rows.append({
-        "object": i+1,
-        "mean_depth_value": float(mean_depth_val),
-        "computed_height_mm": float(computed_height_mm),
-        "bbox_top_left": str(bbox[0]),
-        "bbox_bottom_right": str(bbox[1])
-    })
-df = pd.DataFrame(rows)
+# Located indices bar
+fig_bar, ax_bar = plt.subplots(figsize=(8,1.5))
+values = np.linspace(0, 255, 256).reshape(1, -1)
+ax_bar.imshow(values, cmap='magma', aspect='auto')
+for mv in mean_val:
+    ax_bar.axvline(x=mv, color='lime', linewidth=3)
+ax_bar.axvline(x=ref, color='cyan', linewidth=3)
+ax_bar.set_yticks([]); ax_bar.set_xticks([0,64,128,192,255])
+ax_bar.set_xticklabels(['0','64','128','192','255'])
+ax_bar.set_title('Located Indices')
+plt.tight_layout()
 
-# ---------------- Layout Display ----------------
+# ---------------- Layout: Main visuals + Analysis + Logs ----------------
 st.markdown("## Main visuals")
 colA, colB = st.columns(2)
 with colA:
     st.subheader("Colorized depth map (magma)")
-    st.image(depth_color_rgb, use_column_width=True, caption="Depth (RGB colormap)")
+    st.image(depth_color_rgb, use_column_width=True)
     st.subheader("Thresholded binary segmentation")
     st.image(cv2.cvtColor(ground, cv2.COLOR_GRAY2RGB), use_column_width=True)
 with colB:
@@ -368,25 +351,20 @@ st.image(cv2.cvtColor(temp, cv2.COLOR_BGR2RGB), use_column_width=True)
 
 st.markdown("---")
 st.subheader("Analysis plots")
-plot_cols = st.columns(3)
-with plot_cols[0]:
+ap_cols = st.columns(3)
+with ap_cols[0]:
     st.pyplot(fig_hist)
-with plot_cols[1]:
+with ap_cols[1]:
     st.pyplot(fig_dog)
-with plot_cols[2]:
+with ap_cols[2]:
     st.pyplot(fig_bar)
 
-st.markdown("---")
-st.subheader("Data table")
-st.dataframe(df)
-
 with st.expander("Logs & intermediate values (minima, centers, scaler, raw arrays)", expanded=False):
-    st.write("minima:", minima.tolist())
-    st.write("kmeans centers (ascending):", centers.tolist() if 'centers' in locals() else None)
-    st.write("rounded centers used:", centers.tolist() if 'centers' in locals() else None)
-    st.write("ground_truth:", int(ground_truth))
-    st.write("ref (reference depth):", float(ref))
-    st.write("mean_val per object:", mean_val)
+    st.write("minima:", minima.tolist() if isinstance(minima, np.ndarray) else minima)
+    st.write("kmeans centers (rounded):", centers.tolist())
+    st.write("ground_truth (threshold index):", int(ground_truth))
+    st.write("ref (reference index mean):", float(ref))
+    st.write("mean_val per object (index means):", mean_val)
     st.write("scaler:", scaler)
 
 # Download final annotated image
