@@ -153,17 +153,28 @@ if uploaded_file:
         y = (camh/f)*ty
         return [cx*x, cy*y]
 
-    def vertical_text(img, text, org):
+    # ✅ FIXED VERTICAL TEXT FUNCTION
+    def vertical_text(img, text, org, color=(0,255,0)):
         x, y = org
-        font, scale, thickness, angle = cv2.FONT_HERSHEY_SIMPLEX, 1, 3, 90
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        scale, thickness = 1, 3
         (text_w, text_h), baseline = cv2.getTextSize(text, font, scale, thickness)
-        text_img = np.zeros((text_h + baseline, text_w, 3), dtype=np.uint8)
-        cv2.putText(text_img, text, (0, text_h), font, scale, (0,255,0), thickness)
-        M = cv2.getRotationMatrix2D((text_w//2, text_h//2), angle, 1.0)
-        rotated = cv2.warpAffine(text_img, M, (text_w, text_h), flags=cv2.INTER_LINEAR, borderValue=(0,0,0))
+        canvas_h, canvas_w = text_w + text_h, text_w + text_h
+        text_img = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
+        cv2.putText(text_img, text, (text_h // 2, canvas_h - baseline - text_h // 2),
+                    font, scale, color, thickness, cv2.LINE_AA)
+        rotated = cv2.rotate(text_img, cv2.ROTATE_90_COUNTERCLOCKWISE)
         h, w = rotated.shape[:2]
-        if y+h <= img.shape[0] and x+w <= img.shape[1]:
-            img[y:y+h, x:x+w] = np.where(rotated>0, rotated, img[y:y+h, x:x+w])
+        if y + h > img.shape[0]:
+            h = img.shape[0] - y
+        if x + w > img.shape[1]:
+            w = img.shape[1] - x
+        roi = img[y:y+h, x:x+w]
+        mask = cv2.cvtColor(rotated[:h, :w], cv2.COLOR_BGR2GRAY)
+        mask_inv = cv2.bitwise_not(mask)
+        bg = cv2.bitwise_and(roi, roi, mask=mask_inv)
+        fg = cv2.bitwise_and(rotated[:h, :w], rotated[:h, :w], mask=mask)
+        img[y:y+h, x:x+w] = cv2.add(bg, fg)
         return img
 
     def mean_depth(depth, lt_p, rb_p):
@@ -176,10 +187,12 @@ if uploaded_file:
     bounding_boxes = []
     for i in range(nom_of_objects):
         dx, dy, tl_p, br_p = sad(camh, temp, masks[i])
-        x, y = view(dx, dy, px=initial_image.shape[0], py=initial_image.shape[1], f=5.42, viewport=[6.144,8.6], camh=camh)
+        x, y = view(dx, dy, px=initial_image.shape[0], py=initial_image.shape[1],
+                    f=5.42, viewport=[6.144,8.6], camh=camh)
         cv2.rectangle(temp, tl_p, br_p, (0,255,0), 2)
-        cv2.putText(temp, f"<Width {int(x)}mm>", (tl_p[0], br_p[1]), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 3)
-        temp = vertical_text(temp, f"<Length {int(y)}mm>", tl_p)
+        cv2.putText(temp, f"<Width {int(x)}mm>", (tl_p[0], br_p[1]),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 3)
+        temp = vertical_text(temp, f"<Length {int(y)}mm>", (br_p[0]+10, tl_p[1]))
         bounding_boxes.append([tl_p, br_p])
 
     ref = mean_depth(depth_color, (0,0), bounding_boxes[0][0])
@@ -195,7 +208,8 @@ if uploaded_file:
 
     for i in range(nom_of_objects):
         temph = (float(mean_val[i]-ref)/scaler)*ref_h
-        cv2.putText(temp, f"v Depth {int(temph)}mm v", bounding_boxes[i][0], cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,0), 3)
+        cv2.putText(temp, f"v Depth {int(temph)}mm v", bounding_boxes[i][0],
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,0), 3)
 
     st.subheader("✅ Final Annotated Image")
     st.image(temp, use_column_width=True)
