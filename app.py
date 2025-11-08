@@ -8,40 +8,38 @@ from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 from scipy.ndimage import gaussian_filter1d
 from sklearn.cluster import KMeans
 
-st.title("3D Object Measurement (Width, Length, Depth)")
+st.set_page_config(page_title="3D Object Measurement", layout="wide")
+st.title("📏 3D Object Measurement (Width, Length, Depth)")
 
-# --- Sidebar or main input section ---
-st.subheader("Upload Image & Input Parameters")
+# --- Upload + Inputs together ---
+with st.expander("🔧 Input Parameters", expanded=True):
+    uploaded_file = st.file_uploader("Upload Image", type=["jpg", "png", "jpeg"])
+    relative_height_ratio = st.selectbox("Relative Height Ratio", ["low", "med", "high", "vhigh"])
+    camh = st.number_input("Enter Camera Height (mm)", value=300)
+    ref_h = st.number_input("Enter Reference Object Height (mm)", value=50)
+    nom_of_objects = st.number_input("Number of Objects", value=1, min_value=1)
+    run_process = st.button("🚀 Run Measurement")
 
-uploaded_file = st.file_uploader("Upload Image", type=["jpg", "png", "jpeg"])
-relative_height_ratio = st.selectbox("Relative Height Ratio", ["low", "med", "high", "vhigh"])
-camh = st.number_input("Enter Camera Height (mm)", value=300)
-ref_h = st.number_input("Enter Reference Object Height (mm)", value=50)
-nom_of_objects = st.number_input("Number of Objects", value=1, min_value=1)
-
-run_process = st.button("Run Measurement")
-
-# --- Run when both image and 'Run' pressed ---
+# --- Only run when user presses button and image exists ---
 if run_process and uploaded_file:
-    st.info("Running analysis... please wait, this may take a few moments.")
+    st.info("Processing image and estimating dimensions... please wait.")
 
+    # --- Open image ---
     image = Image.open(uploaded_file)
     initial_image = np.array(image.convert("RGB"))
-    img_rgb = initial_image.copy()
-    st.image(img_rgb, caption="Original Image", use_column_width=True)
 
-    # --- Depth Estimation ---
+    # ---------------- DEPTH ESTIMATION ----------------
     model_id = "depth-anything/Depth-Anything-V2-Small-hf"
     processor = AutoImageProcessor.from_pretrained(model_id)
     model = AutoModelForDepthEstimation.from_pretrained(model_id)
     inputs = processor(images=image, return_tensors="pt")
+
     with torch.no_grad():
         outputs = model(**inputs)
     post_processed = processor.post_process_depth_estimation(
         outputs, target_sizes=[(image.height, image.width)]
     )
     depth_result = post_processed[0]
-
     if "predicted_depth" in depth_result:
         depth = depth_result["predicted_depth"].squeeze().cpu().numpy()
     elif "depth" in depth_result:
@@ -49,53 +47,33 @@ if run_process and uploaded_file:
     else:
         raise KeyError(f"Depth key missing: {depth_result.keys()}")
 
-    # --- Depth visualization ---
     depth_norm = (depth - depth.min()) / (depth.max() - depth.min())
     depth_color = (plt.cm.magma(depth_norm)[:, :, :3] * 255).astype(np.uint8)
     depth_color = cv2.cvtColor(depth_color, cv2.COLOR_RGB2BGR)
-    st.image(depth_color, caption="Colorized Depth Map", use_column_width=True)
 
-    # --- Histogram & Object Masking ---
+    # ---------------- HISTOGRAM & DoG ----------------
     gray = cv2.cvtColor(depth_color, cv2.COLOR_BGR2GRAY)
     hist = cv2.calcHist([gray], [0], None, [256], [0, 256]).flatten()
-    sigma = 1.89
-    smoothed_hist = gaussian_filter1d(hist, sigma=sigma)
-
-    fig, ax = plt.subplots()
-    ax.plot(hist, label="Histogram", alpha=0.5)
-    ax.plot(smoothed_hist, label="Gaussian Smoothed", color='red')
-    ax.legend()
-    st.pyplot(fig)
+    smoothed_hist = gaussian_filter1d(hist, sigma=1.89)
 
     if relative_height_ratio == "low":
         low_bound = 110
-        error_rct = 1.08
     elif relative_height_ratio == "med":
         low_bound = 100
-        error_rct = 1.23
     elif relative_height_ratio == "high":
         low_bound = 80
-        error_rct = 2.91
-    elif relative_height_ratio == "vhigh":
+    else:
         low_bound = 60
 
     derivative = np.gradient(smoothed_hist[low_bound:])
     zero_crossings = np.where(np.diff(np.sign(derivative)))[0]
     minima = np.array([i for i in zero_crossings if derivative[i-1] < 0 and derivative[i+1] > 0]).astype(int) + low_bound
 
-    # --- DoG visualization ---
-    fig2, ax2 = plt.subplots()
-    ax2.plot(derivative, label="DoG (1st Derivative)", color='orange')
-    ax2.scatter(minima - low_bound, derivative[minima - low_bound], color='red', label="Detected Minima")
-    ax2.legend()
-    st.pyplot(fig2)
-
-    # --- KMeans clustering for multiple objects ---
+    # ---------------- K-MEANS MASKS ----------------
     kmeans = KMeans(n_clusters=nom_of_objects, random_state=42)
     kmeans.fit(minima.reshape(-1, 1))
     centers = np.sort(kmeans.cluster_centers_.reshape(-1))
 
-    # --- Mask creation ---
     def small_area_remover(binary):
         num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary, connectivity=8)
         output = np.zeros_like(binary)
@@ -114,7 +92,6 @@ if run_process and uploaded_file:
             _, thresh = cv2.threshold(gray, centers[i], 255, cv2.THRESH_BINARY)
             binary = ground - thresh
             masks[i] = small_area_remover(binary)
-
         sum_mask = np.zeros_like(gray, dtype=np.uint8)
         for i in range(1, nom_of_objects):
             sum_mask = cv2.add(sum_mask, masks[i])
@@ -124,10 +101,7 @@ if run_process and uploaded_file:
     else:
         masks[0] = small_area_remover(ground)
 
-    for i, mask in masks.items():
-        st.image(mask, caption=f"Object Mask {i+1}", use_column_width=True)
-
-    # --- Measurement functions ---
+    # ---------------- MEASUREMENT ----------------
     def sad(camheight, depthmap, mask):
         corners = cv2.goodFeaturesToTrack(mask, 10, 0.05, 50)
         corners = np.int32(corners)
@@ -170,15 +144,12 @@ if run_process and uploaded_file:
         rx, ry = rb_p
         return np.mean(depth[ly:ry, lx:rx])
 
-    # --- Width, Length, Depth ---
     temp = depth_color.copy()
     bounding_boxes = []
     for i in range(nom_of_objects):
         dx, dy, tl_p, br_p = sad(camheight=camh, depthmap=temp, mask=masks[i])
         x, y = view(dx, dy, px=initial_image.shape[0], py=initial_image.shape[1],
                     f=5.42, viewport=[6.144, 8.6], camh=camh)
-        cv2.circle(temp, tl_p, 5, (0, 255, 0), 2)
-        cv2.circle(temp, br_p, 5, (0, 255, 0), 2)
         cv2.rectangle(temp, tl_p, br_p, (0, 255, 0), 2)
         bounding_boxes.append([tl_p, br_p])
         cv2.putText(temp, f"<Width {int(x)}mm>", (tl_p[0], br_p[1]),
@@ -201,7 +172,32 @@ if run_process and uploaded_file:
         cv2.putText(temp, f"v Depth {int(temph)}mm v",
                     bounding_boxes[i][0], cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 3)
 
+    # ================= DISPLAY SECTION =================
+    st.markdown("## 🏁 Final Annotated Output")
     st.image(temp, caption="Final Annotated Image (with Width, Length, Depth)", use_column_width=True)
+
+    st.markdown("---")
+    st.markdown("### 🧠 Intermediate Visualizations")
+    with st.expander("1️⃣ Original & Depth Map"):
+        st.image(initial_image, caption="Original Image", use_column_width=True)
+        st.image(depth_color, caption="Colorized Depth Map", use_column_width=True)
+
+    with st.expander("2️⃣ Histogram & Derivative of Gaussian (DoG)"):
+        fig, ax = plt.subplots()
+        ax.plot(hist, label="Histogram", alpha=0.5)
+        ax.plot(smoothed_hist, label="Gaussian Smoothed", color='red')
+        ax.legend()
+        st.pyplot(fig)
+
+        fig2, ax2 = plt.subplots()
+        ax2.plot(derivative, label="DoG (1st Derivative)", color='orange')
+        ax2.scatter(minima - low_bound, derivative[minima - low_bound], color='red', label="Detected Minima")
+        ax2.legend()
+        st.pyplot(fig2)
+
+    with st.expander("3️⃣ Object Masks"):
+        for i, mask in masks.items():
+            st.image(mask, caption=f"Object Mask {i+1}", use_column_width=True)
 
 elif run_process and not uploaded_file:
     st.warning("Please upload an image before running the measurement.")
