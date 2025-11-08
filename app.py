@@ -188,20 +188,6 @@ if run_process and uploaded_file:
         tx, ty = (dx / px) * viewport[1], (dy / py) * viewport[0]
         return [cx * (camh / f) * tx, cy * (camh / f) * ty]
 
-    def vertical_text(img, text, org):
-        x, y = org
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        scale, thick = 1, 3
-        (tw, th), bl = cv2.getTextSize(text, font, scale, thick)
-        text_img = np.zeros((th + bl, tw, 3), dtype=np.uint8)
-        cv2.putText(text_img, text, (0, th), font, scale, (0, 255, 0), thick)
-        M = cv2.getRotationMatrix2D((tw // 2, th // 2), 90, 1)
-        rotated = cv2.warpAffine(text_img, M, (th, tw))
-        h, w = rotated.shape[:2]
-        if y + h <= img.shape[0] and x + w <= img.shape[1]:
-            img[y:y+h, x:x+w] = np.where(rotated > 0, rotated, img[y:y+h, x:x+w])
-        return img
-
     def mean_depth(depth_map, lt, rb):
         lx, ly = lt
         rx, ry = rb
@@ -218,10 +204,18 @@ if run_process and uploaded_file:
         x, y = view(dx, dy, px=initial_image.shape[0], py=initial_image.shape[1], camh=camh)
         cv2.rectangle(temp, tl, br, (0, 255, 0), 2)
         bboxes.append([tl, br])
-        results.append({"Object": i + 1, "Width (mm)": int(x), "Length (mm)": int(y)})
-        temp = vertical_text(temp, f"Length {int(y)}mm", tl)
-        cv2.putText(temp, f"Width {int(x)}mm", (tl[0], br[1]),
+
+        # --- FIX: length label visible inside box ---
+        lx, ly = tl
+        ly_safe = max(ly + 25, 40)
+        cv2.putText(temp, f"Length {int(y)}mm", (lx + 10, ly_safe),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 3)
+
+        wx, wy = tl[0], br[1] - 15
+        cv2.putText(temp, f"Width {int(x)}mm", (wx + 10, wy),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 3)
+
+        results.append({"Object": i + 1, "Width (mm)": int(x), "Length (mm)": int(y)})
 
     ref = mean_depth(depth_color, (0, 0), bboxes[0][0])
     mean_val, min1 = [], 255
