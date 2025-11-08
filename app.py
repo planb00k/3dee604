@@ -1,4 +1,3 @@
-# app.py
 import streamlit as st
 import cv2
 import numpy as np
@@ -93,24 +92,26 @@ def load_depth_model():
     model = AutoModelForDepthEstimation.from_pretrained(model_id)
     return processor, model
 
-# -------- Improved vertical text ----------
+
+# -------- FIXED vertical text (no clipping of "mm") ----------
 def vertical_text(img, text, org, color=(255, 255, 0), angle=90):
-    """Draw vertical label (alpha blended, auto centered, no clipping)."""
+    """Draw vertical text with full visibility and anti-clipping."""
     font = cv2.FONT_HERSHEY_SIMPLEX
     scale, thick = 1, 3
     (tw, th), _ = cv2.getTextSize(text, font, scale, thick)
 
-    pad = 80
-    canvas_h, canvas_w = tw + pad * 2, th + pad * 2
-    canvas = np.zeros((canvas_h, canvas_w, 4), dtype=np.uint8)
+    # create large enough transparent canvas
+    pad = 150
+    canvas = np.zeros((tw + pad * 2, th + pad * 4, 4), dtype=np.uint8)
 
     org_x = pad
-    org_y = canvas_h // 2 + th // 2
-    cv2.putText(canvas, text, (org_x, org_y), font, scale, (0, 0, 0, 255), thick + 3, cv2.LINE_AA)
+    org_y = (canvas.shape[0] + th) // 2
     cv2.putText(canvas, text, (org_x, org_y), font, scale, (*color, 255), thick, cv2.LINE_AA)
 
-    M = cv2.getRotationMatrix2D((canvas_w / 2, canvas_h / 2), angle, 1.0)
-    rot = cv2.warpAffine(canvas, M, (canvas_w, canvas_h), flags=cv2.INTER_LINEAR, borderValue=(0, 0, 0, 0))
+    # Rotate safely with padding
+    M = cv2.getRotationMatrix2D((canvas.shape[1] // 2, canvas.shape[0] // 2), angle, 1.0)
+    rot = cv2.warpAffine(canvas, M, (canvas.shape[1] * 2, canvas.shape[0] * 2),
+                         flags=cv2.INTER_LINEAR, borderValue=(0, 0, 0, 0))
 
     x, y = org
     h, w = rot.shape[:2]
@@ -119,9 +120,10 @@ def vertical_text(img, text, org, color=(255, 255, 0), angle=90):
 
     alpha = rot[:, :, 3:] / 255.0
     roi = img[y:y + h, x:x + w]
-    roi[:] = (alpha * rot[:, :, :3] + (1 - alpha) * roi).astype(np.uint8)
-    img[y:y + h, x:x + w] = roi
+    blended = (alpha * rot[:, :, :3] + (1 - alpha) * roi).astype(np.uint8)
+    img[y:y + h, x:x + w] = blended
     return img
+
 
 # ---------------- Run Process ----------------
 if run_process and uploaded_file:
