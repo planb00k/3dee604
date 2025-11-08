@@ -360,11 +360,11 @@ if run_process and uploaded_file:
         fig_dog, ax_dog = plt.subplots(figsize=(10, 4))
 
        # Main curves
-       ax_dog.plot(scaled_dog, color='red', label='3×(Gσ1 - Gσ2)')
-       ax_dog.plot(smooth_dog, color='green', label='1.8×Smoothed DoG (σ=1.5)')
+        ax_dog.plot(scaled_dog, color='red', label='3×(Gσ1 - Gσ2)')
+        ax_dog.plot(smooth_dog, color='green', label='1.8×Smoothed DoG (σ=1.5)')
 
       # Correct minima alignment with smoothing offset compensation
-      if "minima_dog" in locals() and len(minima_dog) > 0:
+       if "minima_dog" in locals() and len(minima_dog) > 0:
         md = np.clip(np.array(minima_dog, dtype=int) - 1, 0, len(smooth_dog) - 1)  # shift by -1 index to match smoothing lag
         ax_dog.scatter(md, smooth_dog[md], c='b', marker='x', s=40, label='Minima (DoG)', zorder=5)
 
@@ -372,13 +372,13 @@ if run_process and uploaded_file:
         mh = np.clip(np.array(minima_hist, dtype=int), 0, len(smoothed_hist) - 1)
         ax_dog.scatter(mh, smoothed_hist[mh], c='c', marker='x', s=40, label='Minima (Smoothed Hist)', zorder=5)
 
-         ax_dog.set_title("Scaled DoG with Maxima and Minima (σ₁=3.76, σ₂=1.8) and midpoints")
+        ax_dog.set_title("Scaled DoG with Maxima and Minima (σ₁=3.76, σ₂=1.8) and midpoints")
         ax_dog.set_xlabel("Intensity bins (0–255)")
         ax_dog.set_ylabel("Amplitude")
-       ax_dog.legend()
-       ax_dog.grid(alpha=0.3, linestyle='--', linewidth=0.5)
+        ax_dog.legend()
+        ax_dog.grid(alpha=0.3, linestyle='--', linewidth=0.5)
 
-      centered_plot(
+        centered_plot(
         fig_dog,
         "Figure 6. Scaled DoG with minima from both DoG and smoothed histogram curves (phase-corrected)."
            )
