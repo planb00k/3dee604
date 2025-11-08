@@ -107,6 +107,83 @@ if run_process and uploaded_file:
         masks[0] = small_area_remover(ground)
         residual = np.zeros_like(gray)
 
+    # ---------------- Measurement Functions ----------------
+    def sad(camheight, depthmap, mask):
+        corners = cv2.goodFeaturesToTrack(mask, 10, 0.05, 50)
+        corners = np.int32(corners)
+        x_min = np.min(corners[:, :, 0])
+        y_min = np.min(corners[:, :, 1])
+        x_max = np.max(corners[:, :, 0])
+        y_max = np.max(corners[:, :, 1])
+        return x_max - x_min, y_max - y_min, (x_min, y_min), (x_max, y_max)
+
+    def view(dx, dy, px, py, camh=300, f=6.5, viewport=[6.144, 8.6], cx=0.82, cy=0.79):
+        tx = (dx / px) * viewport[1]
+        ty = (dy / py) * viewport[0]
+        x = (camh / f) * tx
+        y = (camh / f) * ty
+        return [cx * x, cy * y]
+
+    def vertical_text(img, text, org):
+        x, y = org
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        scale = 1
+        thickness = 3
+        angle = 90
+        (text_w, text_h), baseline = cv2.getTextSize(text, font, scale, thickness)
+        text_img = np.zeros((text_h + baseline, text_w, 3), dtype=np.uint8)
+        cv2.putText(text_img, text, (0, text_h), font, scale, (0, 255, 0), thickness)
+        M = cv2.getRotationMatrix2D((text_w // 2, text_h // 2), angle, 1.0)
+        cos, sin = np.abs(M[0, 0]), np.abs(M[0, 1])
+        nW = int((text_h * sin) + (text_w * cos))
+        nH = int((text_h * cos) + (text_w * sin))
+        M[0, 2] += (nW / 2) - text_w // 2
+        M[1, 2] += (nH / 2) - text_h // 2
+        rotated = cv2.warpAffine(text_img, M, (nW, nH), flags=cv2.INTER_LINEAR, borderValue=(0, 0, 0))
+        h, w = rotated.shape[:2]
+        if y + h <= img.shape[0] and x + w <= img.shape[1]:
+            img[y:y+h, x:x+w] = np.where(rotated > 0, rotated, img[y:y+h, x:x+w])
+        return img
+
+    def mean_depth(depth, lt_p, rb_p):
+        lx, ly = lt_p
+        rx, ry = rb_p
+        return np.mean(depth[ly:ry, lx:rx])
+
+    # ---------------- Measurement and Annotation ----------------
+    temp = depth_color.copy()
+    bounding_boxes = []
+    results = []
+
+    for i in range(nom_of_objects):
+        dx, dy, tl_p, br_p = sad(camheight=camh, depthmap=temp, mask=masks[i])
+        x, y = view(dx, dy, px=initial_image.shape[0], py=initial_image.shape[1],
+                    f=5.42, viewport=[6.144, 8.6], camh=camh)
+        cv2.rectangle(temp, tl_p, br_p, (0, 255, 0), 2)
+        bounding_boxes.append([tl_p, br_p])
+        results.append({"Object": i + 1, "Width (mm)": int(x), "Length (mm)": int(y)})
+        temp = vertical_text(temp, f"Length {int(y)}mm", tl_p)
+        cv2.putText(temp, f"Width {int(x)}mm", (tl_p[0], br_p[1]),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 3)
+
+    # compute depth values and add to results
+    ref = mean_depth(depth_color, (0, 0), bounding_boxes[0][0])
+    mean_val = []
+    min1 = 255
+    for i in range(nom_of_objects):
+        _01img = masks[i] // 255
+        meanint = depth_color[_01img == 1].mean()
+        if ref < meanint < min1:
+            min1 = meanint
+        mean_val.append(meanint)
+    scaler = float(min1 - ref) if (min1 - ref) != 0 else 1.0
+
+    for i in range(nom_of_objects):
+        temph = (float(mean_val[i] - ref) / scaler) * ref_h
+        cv2.putText(temp, f"Depth {int(temph)}mm",
+                    bounding_boxes[i][0], cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 3)
+        results[i]["Depth (mm)"] = int(temph)
+
     # ---------------- Helper Functions ----------------
     def centered_visual(img_array, caption=None, width=550):
         if isinstance(img_array, np.ndarray):
@@ -146,9 +223,11 @@ if run_process and uploaded_file:
 
     # ---------------- Display Section ----------------
     st.header("Final Annotated Output")
-    centered_visual(depth_color, "Figure 1. Final annotated image showing calculated Width, Length, and Depth values for detected objects.")
+    # show annotated image (temp) — not raw depth_color
+    centered_visual(temp, "Figure 1. Final annotated image showing calculated Width, Length, and Depth values for detected objects.")
 
-    df = pd.DataFrame(columns=["Object", "Width (mm)", "Length (mm)", "Depth (mm)"])
+    # Use actual results (not empty frame)
+    df = pd.DataFrame(results)
     st.markdown("<h5 style='font-size:20px;'>Object Dimension Measurements</h5>", unsafe_allow_html=True)
     st.dataframe(df.style.hide(axis='index').set_properties(**{'font-size': '16px'}), use_container_width=True)
 
@@ -196,8 +275,9 @@ if run_process and uploaded_file:
 
     with st.expander("Segmentation and Object Masks", expanded=False):
         centered_visual(ground, "Figure 8. Ground threshold mask after initial binary segmentation.")
-        for i, mask in masks.items():
-            centered_visual(mask, f"Figure 9.{i + 1} Object Mask {i + 1} after area refinement using connected components.")
+        # iterate masks in sorted order of keys to ensure 9.1 then 9.2 etc.
+        for key, mask in sorted(masks.items(), key=lambda x: x[0]):
+            centered_visual(mask, f"Figure 9.{key + 1} Object Mask {key + 1} after area refinement using connected components.")
         centered_visual(residual, "Figure 10. Residual mask showing unassigned or background regions after segmentation.")
 
 elif run_process and not uploaded_file:
