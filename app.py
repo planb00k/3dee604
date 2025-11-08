@@ -357,7 +357,7 @@ if run_process and uploaded_file:
         centered_plot(fig_hist, "Figure 5. Raw and smoothed histogram showing intensity distribution of the grayscale depth map.")
 
  
-        with st.expander("DoG (Report-style) Visualization", expanded=False):
+    with st.expander("DoG (Report-style) Visualization", expanded=False):
         fig_dog, ax_dog = plt.subplots(figsize=(10, 4))
 
         # Main curves
