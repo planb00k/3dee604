@@ -119,9 +119,12 @@ if run_process and uploaded_file:
     upper = min(len(smooth_dog), 256)
     derivative_dog = np.gradient(smooth_dog[lower:upper])
     zc_dog = np.where(np.diff(np.sign(derivative_dog)))[0]
-    minima_dog = np.array([i for i in zc_dog if (i - 1) >= 0 and (i + 1) < len(derivative_dog) and derivative_dog[i - 1] < 0 and derivative_dog[i + 1] > 0]).astype(int) + lower
+    maxima_dog = np.array([i for i in zc_dog if derivative_dog[i - 1] > 0 and derivative_dog[i + 1] < 0]).astype(int) + lower
+    minima_dog = np.array([i for i in zc_dog if derivative_dog[i - 1] < 0 and derivative_dog[i + 1] > 0]).astype(int) + lower
     if minima_dog.size == 0:
         minima_dog = np.array([int(np.argmin(smooth_dog))])
+    if maxima_dog.size == 0:
+        maxima_dog = np.array([int(np.argmax(smooth_dog))])
 
     def run_kmeans_safe(points, k):
         pts = np.array(points).reshape(-1, 1).astype(float)
@@ -279,14 +282,16 @@ if run_process and uploaded_file:
         ax_hist.legend()
         centered_plot(fig_hist, "Figure 5. Raw and smoothed histogram showing the depth intensity distribution.")
 
-        fig_comb, ax_comb = plt.subplots(figsize=(6, 3))
+        fig_comb, ax_comb = plt.subplots(figsize=(10, 4.5))
         ax_comb.plot(display_dog_red, color='red', label=f"3x DoG (σ1=3.76, σ2=1.8)")
         ax_comb.plot(display_smooth_dog, color='green', label=f"1.8x Smoothed DoG (σ=1.5)")
-        ax_comb.set_title("DoG (σ₁=3.76 − σ₂=1.8) and Smoothed DoG")
+        ax_comb.scatter(maxima_dog, display_smooth_dog[maxima_dog], marker='x', color='c', s=60, label='Maxima (DoG)', zorder=5)
+        ax_comb.scatter(minima_dog, display_smooth_dog[minima_dog], marker='x', color='b', s=60, label='Minima (DoG)', zorder=6)
+        ax_comb.set_title("Scaled DoG with Maxima's and Minima's on means:1.98,3.76")
         ax_comb.set_xlabel("Pixel Intensity")
         ax_comb.set_ylabel("Value")
         ax_comb.legend()
-        centered_plot(fig_comb, "Figure 5B. Scaled DoG (red) and smoothed DoG (green) for visualization.")
+        centered_plot(fig_comb, "Figure 5B. Scaled DoG with maxima and minima (σ₁ = 3.76, σ₂ = 1.8, post-smooth σ = 1.5).")
 
     with st.expander("Difference of Gaussians (DoG) Analysis", expanded=False):
         fig_dog, ax_dog = plt.subplots(figsize=(6, 3))
