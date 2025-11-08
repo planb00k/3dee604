@@ -8,6 +8,8 @@ import matplotlib.pyplot as plt
 from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 from scipy.ndimage import gaussian_filter1d
 from sklearn.cluster import KMeans
+import base64
+import io
 
 st.set_page_config(page_title="3D Object Measurement", layout="wide")
 st.title("3D Object Measurement (Width, Length, Depth)")
@@ -181,21 +183,46 @@ if run_process and uploaded_file:
                     bounding_boxes[i][0], cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 3)
         results[i]["Depth (mm)"] = int(temph)
 
+    # ---------------- Centered Display Helpers ----------------
+    def centered_visual(img_array, caption=None, width=550):
+        if isinstance(img_array, np.ndarray):
+            img_pil = Image.fromarray(cv2.cvtColor(img_array, cv2.COLOR_BGR2RGB))
+        else:
+            img_pil = img_array
+        buffered = io.BytesIO()
+        img_pil.save(buffered, format="PNG")
+        img_b64 = base64.b64encode(buffered.getvalue()).decode()
+        html = f"""
+        <div style="display:flex; flex-direction:column; align-items:center;">
+            <img src="data:image/png;base64,{img_b64}" 
+                 style="display:block; margin:0 auto; width:{width}px; border-radius:6px;">
+            <div style="text-align:left; width:{width}px; margin-top:6px;">
+                <p style="font-size:20px; font-weight:bold; margin-bottom:25px;">{caption}</p>
+            </div>
+        </div>
+        """
+        st.markdown(html, unsafe_allow_html=True)
+
+    def centered_plot(fig, caption, width=550):
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", bbox_inches="tight", dpi=150)
+        buf.seek(0)
+        img_b64 = base64.b64encode(buf.read()).decode()
+        plt.close(fig)
+        html = f"""
+        <div style="display:flex; flex-direction:column; align-items:center;">
+            <img src="data:image/png;base64,{img_b64}" 
+                 style="display:block; margin:0 auto; width:{width}px; border-radius:6px;">
+            <div style="text-align:left; width:{width}px; margin-top:6px;">
+                <p style="font-size:20px; font-weight:bold; margin-bottom:25px;">{caption}</p>
+            </div>
+        </div>
+        """
+        st.markdown(html, unsafe_allow_html=True)
+
     # ---------------- Display Section ----------------
     st.header("Final Annotated Output")
-
-    def centered_visual(content_func, *args, caption=None, width=550):
-        st.markdown("<div style='text-align:center;'>", unsafe_allow_html=True)
-        content_func(*args, width=width)
-        st.markdown("</div>", unsafe_allow_html=True)
-        if caption:
-            st.markdown(
-                f"<div style='text-align:left; margin:auto; width:{width}px;'>"
-                f"<p style='font-size:20px; font-weight:bold;'>{caption}</p></div>",
-                unsafe_allow_html=True
-            )
-
-    centered_visual(st.image, temp, caption="Figure 1. Final annotated image showing calculated Width, Length, and Depth values for detected objects.")
+    centered_visual(temp, "Figure 1. Final annotated image showing calculated Width, Length, and Depth values for detected objects.")
 
     df = pd.DataFrame(results)
     st.markdown("<h5 style='font-size:20px;'>Object Dimension Measurements</h5>", unsafe_allow_html=True)
@@ -204,22 +231,10 @@ if run_process and uploaded_file:
     st.markdown("---")
     st.header("Intermediate Visualizations")
 
-    def centered_plot(fig, caption, width=550):
-        st.markdown("<div style='text-align:center;'>", unsafe_allow_html=True)
-        st.pyplot(fig)
-        st.markdown("</div>", unsafe_allow_html=True)
-        st.markdown(
-            f"<div style='text-align:left; margin:auto; width:{width}px;'>"
-            f"<p style='font-size:20px; font-weight:bold;'>{caption}</p></div>",
-            unsafe_allow_html=True
-        )
+    centered_visual(initial_image, "Figure 2. Original RGB image used for depth analysis.")
+    centered_visual(depth_gray, "Figure 3. Grayscale depth map representing normalized pixel depth values.")
+    centered_visual(depth_color, "Figure 4. Colorized depth map using magma colormap for visualizing relative distances.")
 
-    # --- Images ---
-    centered_visual(st.image, initial_image, caption="Figure 2. Original RGB image used for depth analysis.")
-    centered_visual(st.image, depth_gray, caption="Figure 3. Grayscale depth map representing normalized pixel depth values.")
-    centered_visual(st.image, depth_color, caption="Figure 4. Colorized depth map using magma colormap for visualizing relative distances.")
-
-    # --- Graphs ---
     fig_hist, ax_hist = plt.subplots(figsize=(6, 3))
     ax_hist.plot(hist, label="Raw Histogram", alpha=0.6, color='gray')
     ax_hist.plot(smoothed_hist, label="Gaussian Smoothed Histogram", color='red', linewidth=2)
@@ -249,11 +264,10 @@ if run_process and uploaded_file:
     ax_km.legend()
     centered_plot(fig_km, "Figure 7. KMeans clustering applied to histogram minima for automatic segmentation threshold selection.")
 
-    # --- Masks ---
-    centered_visual(st.image, ground, caption="Figure 8. Ground threshold mask after initial binary segmentation.")
+    centered_visual(ground, "Figure 8. Ground threshold mask after initial binary segmentation.")
     for i, mask in masks.items():
-        centered_visual(st.image, mask, caption=f"Figure 9.{i + 1} Object Mask {i + 1} after area refinement using connected components.")
-    centered_visual(st.image, residual, caption="Figure 10. Residual mask showing unassigned or background regions after segmentation.")
+        centered_visual(mask, f"Figure 9.{i + 1} Object Mask {i + 1} after area refinement using connected components.")
+    centered_visual(residual, "Figure 10. Residual mask showing unassigned or background regions after segmentation.")
 
 elif run_process and not uploaded_file:
     st.warning("Please upload an image before running the measurement.")
