@@ -40,7 +40,7 @@ def centered_visual(img_array, caption=None, width=550):
     """
     st.markdown(html, unsafe_allow_html=True)
 
-def centered_plot(fig, caption=None, width=550):
+def centered_plot(fig, caption=None, width=650):
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight", dpi=150)
     buf.seek(0)
@@ -115,12 +115,10 @@ if run_process and uploaded_file:
     smooth_dog = gaussian_filter1d(dog, sigma=1.5)
     display_smooth_dog = 1.8 * smooth_dog
 
-    lower = low_bound
-    upper = min(len(smooth_dog), 256)
-    derivative_dog = np.gradient(smooth_dog[lower:upper])
+    derivative_dog = np.gradient(smooth_dog)
     zc_dog = np.where(np.diff(np.sign(derivative_dog)))[0]
-    maxima_dog = np.array([i for i in zc_dog if derivative_dog[i - 1] > 0 and derivative_dog[i + 1] < 0]).astype(int) + lower
-    minima_dog = np.array([i for i in zc_dog if derivative_dog[i - 1] < 0 and derivative_dog[i + 1] > 0]).astype(int) + lower
+    maxima_dog = np.array([i for i in zc_dog if derivative_dog[i - 1] > 0 and derivative_dog[i + 1] < 0]).astype(int)
+    minima_dog = np.array([i for i in zc_dog if derivative_dog[i - 1] < 0 and derivative_dog[i + 1] > 0]).astype(int)
     if minima_dog.size == 0:
         minima_dog = np.array([int(np.argmin(smooth_dog))])
     if maxima_dog.size == 0:
