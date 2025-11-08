@@ -219,19 +219,18 @@ if run_process and uploaded_file:
         cv2.rectangle(temp, tl, br, (0, 255, 0), 2)
         bboxes.append([tl, br])
 
-        # --- Vertical Length label ---
+        # Draw Length (vertical) and Width
         lx, ly = tl
         ly_safe = min(depth_color.shape[0] - 150, max(ly, 20))
         lx_safe = max(lx + 10, 10)
         temp = vertical_text(temp, f"Length {int(y)}mm", (lx_safe, ly_safe))
-
-        # Width label
         wx, wy = tl[0], br[1] - 15
         cv2.putText(temp, f"Width {int(x)}mm", (wx + 10, wy),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 3)
 
         results.append({"Object": i + 1, "Width (mm)": int(x), "Length (mm)": int(y)})
 
+    # ---- Depth comes after width/length ----
     ref = mean_depth(depth_color, (0, 0), bboxes[0][0])
     mean_val, min1 = [], 255
     for i in range(n_clusters):
