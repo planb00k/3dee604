@@ -157,7 +157,6 @@ if run_process and uploaded_file:
     depth_color = (plt.cm.magma(depth_norm)[:, :, :3] * 255).astype(np.uint8)
     depth_color = cv2.cvtColor(depth_color, cv2.COLOR_RGB2BGR)
 
-    # ---- Histogram & DoG ----
     gray = cv2.cvtColor(depth_color, cv2.COLOR_BGR2GRAY)
     hist = cv2.calcHist([gray], [0], None, [256], [0, 256]).flatten()
     smoothed_hist = gaussian_filter1d(hist, sigma=1.89)
@@ -165,7 +164,6 @@ if run_process and uploaded_file:
     smoothed_hist2 = gaussian_filter1d(hist, sigma=1.8)
     dog = smoothed_hist1 - smoothed_hist2
     smooth_dog = 1.8 * gaussian_filter1d(dog, sigma=1.5)
-    scaled_dog = 3 * (smoothed_hist1 - smoothed_hist2)
 
     if relative_height_ratio == "low":
         low_bound = 110
@@ -246,16 +244,13 @@ if run_process and uploaded_file:
         cv2.rectangle(temp, tl, br, (0, 255, 0), 2)
         bboxes.append([tl, br])
 
-        # --- Adaptive Label Placement ---
-        center_x = (tl[0] + br[0]) // 2
-        img_center = initial_image.shape[1] // 2
-        if center_x < img_center:
-            label_x = min(br[0] + 15, temp.shape[1] - 60)
-            label_angle = 90
-        else:
+        # --- Smart Label Placement ---
+        img_w = temp.shape[1]
+        label_x = br[0] + 15
+        label_angle = 90
+        if label_x + 120 > img_w:  # if too close to right edge, move inside
             label_x = max(tl[0] + 10, 0)
-            label_angle = 90
-        label_y = max(tl[1] + (br[1] - tl[1]) // 4, 20)
+        label_y = max(tl[1] + (br[1] - tl[1]) // 2 - 20, 20)
 
         temp = vertical_text(
             temp,
