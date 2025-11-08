@@ -1,3 +1,4 @@
+# app.py
 import streamlit as st
 import cv2
 import numpy as np
@@ -20,7 +21,7 @@ with st.expander("Input Parameters", expanded=True):
     relative_height_ratio = st.selectbox("Relative Height Ratio", ["low", "med", "high", "vhigh"])
     camh = st.number_input("Enter Camera Height (mm)", value=300)
     ref_h = st.number_input("Enter Reference Object Height (mm)", value=50)
-    nom_of_objects = st.number_input("Number of Objects", value=1, min_value=1)
+    nom_of_objects = st.number_input("Number of Objects", value=2, min_value=1)
     run_process = st.button("Run Measurement")
 
 # ---------------- Helpers ----------------
@@ -40,18 +41,14 @@ def find_local_minima(arr):
     return minima_idx
 
 def safe_kmeans_centers(points, n_clusters, low=0, high=255):
-    """
-    Return sorted centers (length n_clusters). If not enough points,
-    fallback to evenly spaced values between low and high.
-    """
     if points is None or len(points) == 0:
         return np.linspace(low, high, n_clusters + 1)[1:]
     pts = np.array(points).reshape(-1, 1).astype(float)
     if pts.shape[0] < n_clusters:
-        # augment with evenly spaced values to fill
         extra_needed = n_clusters - pts.shape[0]
         extra = np.linspace(low, high, extra_needed + 2, dtype=int)[1:-1]
-        pts = np.vstack([pts, extra.reshape(-1, 1).astype(float)])
+        if extra.size > 0:
+            pts = np.vstack([pts, extra.reshape(-1, 1).astype(float)])
     kmeans = KMeans(n_clusters=n_clusters, random_state=42)
     kmeans.fit(pts)
     centers = np.sort(kmeans.cluster_centers_.reshape(-1))
@@ -91,6 +88,14 @@ def centered_plot(fig, caption, width=700):
     """
     st.markdown(html, unsafe_allow_html=True)
 
+# ---------------- Model caching (Streamlit Cloud friendly) ----------------
+@st.cache_resource
+def load_depth_model():
+    model_id = "depth-anything/Depth-Anything-V2-Small-hf"
+    processor = AutoImageProcessor.from_pretrained(model_id)
+    model = AutoModelForDepthEstimation.from_pretrained(model_id)
+    return processor, model
+
 # ---------------- Run Process ----------------
 if run_process and uploaded_file:
     st.info("Processing image. Please wait...")
@@ -100,10 +105,7 @@ if run_process and uploaded_file:
     initial_image = np.array(image.convert("RGB"))
 
     # ---------------- Depth Estimation ----------------
-    model_id = "depth-anything/Depth-Anything-V2-Small-hf"
-    processor = AutoImageProcessor.from_pretrained(model_id)
-    model = AutoModelForDepthEstimation.from_pretrained(model_id)
-
+    processor, model = load_depth_model()
     inputs = processor(images=image, return_tensors="pt")
     with torch.no_grad():
         outputs = model(**inputs)
@@ -125,25 +127,25 @@ if run_process and uploaded_file:
     depth_color = (plt.cm.magma(depth_norm)[:, :, :3] * 255).astype(np.uint8)
     depth_color = cv2.cvtColor(depth_color, cv2.COLOR_RGB2BGR)
 
-    # ---------------- Histogram & DoG (as per write-up) ----------------
+    # ---------------- Histogram & DoG (per write-up) ----------------
     gray = cv2.cvtColor(depth_color, cv2.COLOR_BGR2GRAY)
     hist = cv2.calcHist([gray], [0], None, [256], [0, 256]).flatten()
 
-    # 1) Smoothed histogram (sigma = 1.89)
+    # Smoothed histogram (sigma = 1.89)
     smoothed_hist = gaussian_filter1d(hist, sigma=1.89)
 
-    # 2) DoG: (sigma1 = 3.76) - (sigma2 = 1.8)
+    # DoG: (sigma1 = 3.76) - (sigma2 = 1.8)
     sigma_doG_1 = 3.76
     sigma_doG_2 = 1.8
     smoothed_hist1 = gaussian_filter1d(hist, sigma=sigma_doG_1)
     smoothed_hist2 = gaussian_filter1d(hist, sigma=sigma_doG_2)
     dog = smoothed_hist1 - smoothed_hist2
 
-    # 3) Smooth the DoG (sigma = 1.5) and scale for plotting per your report
+    # Smooth the DoG (sigma = 1.5) and scale for plotting
     smooth_dog = 1.8 * gaussian_filter1d(dog, sigma=1.5)
-    scaled_dog = 3 * (smoothed_hist1 - smoothed_hist2)  # for red curve (visual scaling)
+    scaled_dog = 3 * (smoothed_hist1 - smoothed_hist2)  # red curve
 
-    # define low_bound based on relative height ratio (same as earlier logic)
+    # low_bound selection
     if relative_height_ratio == "low":
         low_bound = 110
     elif relative_height_ratio == "med":
@@ -154,27 +156,24 @@ if run_process and uploaded_file:
         low_bound = 60
     upper_bound = 255
 
-    # 4) Find minima in both smoothed_hist (windowed) and smooth_dog (windowed)
+    # find minima in the windowed data
     mh_window = smoothed_hist[low_bound:upper_bound]
     dog_window = smooth_dog[low_bound:upper_bound]
 
-    minima_hist = find_local_minima(mh_window) + low_bound
-    minima_dog = find_local_minima(dog_window) + low_bound
+    minima_hist_rel = find_local_minima(mh_window)
+    minima_dog_rel = find_local_minima(dog_window)
 
-    # guard against empty minima arrays
-    minima_hist = np.array(minima_hist).astype(int) if len(minima_hist) > 0 else np.array([], dtype=int)
-    minima_dog = np.array(minima_dog).astype(int) if len(minima_dog) > 0 else np.array([], dtype=int)
+    minima_hist = (minima_hist_rel + low_bound).astype(int) if minima_hist_rel.size > 0 else np.array([], dtype=int)
+    minima_dog = (minima_dog_rel + low_bound).astype(int) if minima_dog_rel.size > 0 else np.array([], dtype=int)
 
-    # 5) Cluster minima from both methods separately (KMeans) into nom_of_objects centers
+    # KMeans cluster minima separately then midpoint them per writeup
     n_clusters = int(max(1, nom_of_objects))
     centers_hist = safe_kmeans_centers(minima_hist, n_clusters, low=low_bound, high=upper_bound)
     centers_dog = safe_kmeans_centers(minima_dog, n_clusters, low=low_bound, high=upper_bound)
 
-    # 6) Take midpoint of corresponding centers to get final thresholds
-    # If counts match n_clusters, pair by sorted order
     centers_hist = np.array(centers_hist).astype(float)
     centers_dog = np.array(centers_dog).astype(float)
-    # ensure same length
+
     if centers_hist.shape[0] != n_clusters:
         centers_hist = np.linspace(low_bound, upper_bound, n_clusters + 1)[1:].astype(float)
     if centers_dog.shape[0] != n_clusters:
@@ -182,9 +181,8 @@ if run_process and uploaded_file:
 
     centers_mid = np.sort((centers_hist + centers_dog) / 2.0).astype(int)
 
-    # 7) Use these midpoints as thresholds to create masks (N masks for N objects)
+    # Build masks using midpoints
     masks = {}
-    # ground threshold - lowest midpoint (foreground)
     ground_threshold = int(centers_mid[0]) if len(centers_mid) > 0 else low_bound
     _, ground = cv2.threshold(gray, ground_threshold, 255, cv2.THRESH_BINARY)
 
@@ -195,7 +193,6 @@ if run_process and uploaded_file:
             binary = cv2.subtract(ground, thresh)
             masks[i] = small_area_remover(binary)
 
-        # residual (unassigned)
         sum_mask = np.zeros_like(gray, dtype=np.uint8)
         for i in range(1, n_clusters):
             sum_mask = cv2.add(sum_mask, masks[i])
@@ -206,7 +203,6 @@ if run_process and uploaded_file:
         masks[0] = small_area_remover(ground)
         residual = np.zeros_like(gray)
 
-    # Save hist components for plotting
     hist_components = {
         "hist": hist,
         "smoothed_hist": smoothed_hist,
@@ -223,10 +219,8 @@ if run_process and uploaded_file:
 
     # ---------------- Measurement Functions (preserve old behavior) ----------------
     def sad(camheight, depthmap, mask):
-        # goodFeaturesToTrack expects non-zero mask. ensure mask is uint8.
         try:
             if mask is None or np.count_nonzero(mask) == 0:
-                # fallback bounding box: full image
                 h, w = depthmap.shape[:2]
                 return w, h, (0, 0), (w - 1, h - 1)
             corners = cv2.goodFeaturesToTrack(mask, 10, 0.05, 50)
@@ -243,7 +237,7 @@ if run_process and uploaded_file:
             h, w = depthmap.shape[:2]
             return w, h, (0, 0), (w - 1, h - 1)
 
-    # KEEP old view() ordering exactly as your working code (px = shape[0], py = shape[1])
+    # Keep old px/py ordering: px = shape[0], py = shape[1]
     def view(dx, dy, px, py, camh=300, f=5.42, viewport=[6.144, 8.6], cx=0.82, cy=0.79):
         tx = (dx / px) * viewport[1]
         ty = (dy / py) * viewport[0]
@@ -275,7 +269,6 @@ if run_process and uploaded_file:
     def mean_depth(depth_map, lt_p, rb_p):
         lx, ly = lt_p
         rx, ry = rb_p
-        # clamp indices
         lx = max(0, min(depth_map.shape[1]-1, lx))
         rx = max(0, min(depth_map.shape[1]-1, rx))
         ly = max(0, min(depth_map.shape[0]-1, ly))
@@ -292,7 +285,6 @@ if run_process and uploaded_file:
     for i in range(n_clusters):
         mask_i = masks.get(i, np.zeros_like(gray))
         dx, dy, tl_p, br_p = sad(camheight=camh, depthmap=temp, mask=mask_i)
-        # preserve old px/py ordering
         x, y = view(dx, dy, px=initial_image.shape[0], py=initial_image.shape[1],
                     f=5.42, viewport=[6.144, 8.6], camh=camh)
         cv2.rectangle(temp, tl_p, br_p, (0, 255, 0), 2)
@@ -302,7 +294,7 @@ if run_process and uploaded_file:
         cv2.putText(temp, f"Width {int(x)}mm", (tl_p[0], br_p[1]),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 3)
 
-    # Depth calculation (preserve original method)
+    # Depth calculation
     ref = mean_depth(depth_color, (0, 0), bounding_boxes[0][0])
     mean_val = []
     min1 = 255
@@ -323,7 +315,7 @@ if run_process and uploaded_file:
                     bounding_boxes[i][0], cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 3)
         results[i]["Depth (mm)"] = int(temph)
 
-    # ---------------- Display Section (restore all intermediate visuals) ----------------
+    # ---------------- Display Section ----------------
     st.header("Final Annotated Output")
     centered_visual(temp, "Figure 1. Final annotated image showing calculated Width, Length, and Depth values for detected objects.")
 
@@ -359,38 +351,39 @@ if run_process and uploaded_file:
     with st.expander("DoG (Report-style) Visualization", expanded=False):
         fig_dog, ax_dog = plt.subplots(figsize=(10, 4))
 
-       # Main curves
+        # Main curves
         ax_dog.plot(scaled_dog, color='red', label='3×(Gσ1 - Gσ2)')
         ax_dog.plot(smooth_dog, color='green', label='1.8×Smoothed DoG (σ=1.5)')
 
-      # Correct minima alignment with smoothing offset compensation
-        if "minima_dog" in locals() and len(minima_dog) > 0:
-         md = np.clip(np.array(minima_dog, dtype=int) - 1, 0, len(smooth_dog) - 1)  # shift by -1 index to match smoothing lag
-         ax_dog.scatter(md, smooth_dog[md], c='b', marker='x', s=40, label='Minima (DoG)', zorder=5)
+        # Phase compensation: shift minima by -1 to align with smoothing lag, then clamp
+        if minima_dog.size > 0:
+            md = np.clip(minima_dog.astype(int) - 1, 0, len(smooth_dog) - 1)
+            ax_dog.scatter(md, smooth_dog[md], c='b', marker='x', s=40, label='Minima (DoG)', zorder=5)
 
-       if "minima_hist" in locals() and len(minima_hist) > 0:
-         mh = np.clip(np.array(minima_hist, dtype=int), 0, len(smoothed_hist) - 1)
-         ax_dog.scatter(mh, smoothed_hist[mh], c='c', marker='x', s=40, label='Minima (Smoothed Hist)', zorder=5)
+        if minima_hist.size > 0:
+            mh = np.clip(minima_hist.astype(int), 0, len(smoothed_hist) - 1)
+            ax_dog.scatter(mh, smoothed_hist[mh], c='c', marker='x', s=40, label='Minima (Smoothed Hist)', zorder=5)
 
-        ax_dog.set_title("Scaled DoG with Maxima and Minima (σ₁=3.76, σ₂=1.8) and midpoints")
+        # plot midpoints as vertical lines for visual aid
+        for cm in centers_mid:
+            ax_dog.axvline(x=int(cm), color='gray', linestyle='--', linewidth=0.8, alpha=0.6)
+
+        ax_dog.set_title("Scaled DoG with Minima (DoG & Smoothed Histogram) and Midpoints")
         ax_dog.set_xlabel("Intensity bins (0–255)")
         ax_dog.set_ylabel("Amplitude")
         ax_dog.legend()
         ax_dog.grid(alpha=0.3, linestyle='--', linewidth=0.5)
 
         centered_plot(
-        fig_dog,
-        "Figure 6. Scaled DoG with minima from both DoG and smoothed histogram curves (phase-corrected)."
-           )
+            fig_dog,
+            "Figure 6. Scaled DoG with minima from both DoG and smoothed histogram curves (phase-corrected)."
+        )
 
     with st.expander("Segmentation and Object Masks", expanded=False):
         centered_visual(ground, "Figure 7. Ground threshold mask after initial binary segmentation.")
         for key, mask in sorted(masks.items(), key=lambda x: x[0]):
             centered_visual(mask, f"Figure 8.{key + 1} Object Mask {key + 1} after area refinement using connected components.")
         centered_visual(residual, "Figure 9. Residual mask showing unassigned or background regions after segmentation.")
-
-
-   
 
 elif run_process and not uploaded_file:
     st.warning("Please upload an image before running the measurement.")
