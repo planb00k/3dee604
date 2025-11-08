@@ -101,7 +101,6 @@ def vertical_text(img, text, org, color=(255, 255, 0), angle=90):
     (tw, th), _ = cv2.getTextSize(text, font, scale, thick)
 
     pad = 150
-    # canvas height/width chosen to give plenty of room for rotation
     canvas_h = tw + pad * 2
     canvas_w = th + pad * 4
     canvas = np.zeros((canvas_h, canvas_w, 4), dtype=np.uint8)
@@ -110,7 +109,6 @@ def vertical_text(img, text, org, color=(255, 255, 0), angle=90):
     org_y = (canvas_h + th) // 2
     cv2.putText(canvas, text, (org_x, org_y), font, scale, (*color, 255), thick, cv2.LINE_AA)
 
-    # rotate with big output canvas to avoid clipping rotated text
     out_w = canvas_w * 2
     out_h = canvas_h * 2
     M = cv2.getRotationMatrix2D((canvas_w // 2, canvas_h // 2), angle, 1.0)
@@ -118,29 +116,21 @@ def vertical_text(img, text, org, color=(255, 255, 0), angle=90):
 
     x, y = org
     h, w = rot.shape[:2]
+    x1, y1 = max(0, x), max(0, y)
+    x2, y2 = min(x + w, img.shape[1]), min(y + h, img.shape[0])
 
-    # Compute visible intersection between rot canvas and target image
-    x1 = max(0, x)
-    y1 = max(0, y)
-    x2 = min(x + w, img.shape[1])
-    y2 = min(y + h, img.shape[0])
-
-    # If there's nothing visible, skip
     if x1 >= x2 or y1 >= y2:
         return img
 
-    # Corresponding coordinates on rot
     rot_x1 = max(0, -x)
     rot_y1 = max(0, -y)
     rot_x2 = rot_x1 + (x2 - x1)
     rot_y2 = rot_y1 + (y2 - y1)
 
-    # Slicing and blending (ensure shapes match)
     rot_slice = rot[rot_y1:rot_y2, rot_x1:rot_x2]
     alpha = (rot_slice[:, :, 3:] / 255.0).astype(np.float32)
     rgb_rot = rot_slice[:, :, :3].astype(np.float32)
     roi = img[y1:y2, x1:x2].astype(np.float32)
-
     blended = (alpha * rgb_rot + (1 - alpha) * roi).astype(np.uint8)
     img[y1:y2, x1:x2] = blended
     return img
@@ -256,17 +246,21 @@ if run_process and uploaded_file:
         cv2.rectangle(temp, tl, br, (0, 255, 0), 2)
         bboxes.append([tl, br])
 
+        # --- Adaptive Label Placement ---
         center_x = (tl[0] + br[0]) // 2
         img_center = initial_image.shape[1] // 2
         if center_x < img_center:
-            label_x, label_angle = br[0] + 15, 90
+            label_x = min(br[0] + 15, temp.shape[1] - 60)
+            label_angle = 90
         else:
-            label_x, label_angle = tl[0] - 60, 270
+            label_x = max(tl[0] + 10, 0)
+            label_angle = 90
+        label_y = max(tl[1] + (br[1] - tl[1]) // 4, 20)
 
         temp = vertical_text(
             temp,
             f"Length {int(y)} mm",
-            (label_x, tl[1] + 20),
+            (label_x, label_y),
             color=(255, 255, 0),
             angle=label_angle
         )
@@ -303,46 +297,6 @@ if run_process and uploaded_file:
 
     df = pd.DataFrame(results)
     st.dataframe(df.style.hide(axis='index').set_properties(**{'font-size': '16px'}), use_container_width=True)
-
-    st.markdown("---")
-    st.header("Intermediate Visualizations")
-
-    with st.expander("Original and Depth Representations", expanded=False):
-        centered_visual(initial_image, "Figure 2. Original RGB image.")
-        centered_visual(depth_gray, "Figure 3. Grayscale depth map.")
-        centered_visual(depth_color, "Figure 4. Colorized depth map (magma colormap).")
-
-    with st.expander("Depth Intensity Histogram & Smoothed", expanded=False):
-        fig, ax = plt.subplots(figsize=(8, 3))
-        ax.plot(hist, label="Raw Histogram", alpha=0.6)
-        ax.plot(smoothed_hist, label="Gaussian Smoothed (σ=1.89)", color='red', linewidth=2)
-        ax.legend()
-        centered_plot(fig, "Figure 5. Raw and smoothed histogram.")
-
-    with st.expander("DoG Visualization", expanded=False):
-        fig, ax = plt.subplots(figsize=(10, 4))
-        ax.plot(scaled_dog, color='red', label='3×(Gσ1 - Gσ2)')
-        ax.plot(smooth_dog, color='green', label='1.8×Smoothed DoG (σ=1.5)')
-        if len(minima_dog) > 0:
-            md = np.clip(minima_dog.astype(int), 0, len(smooth_dog) - 1)
-            ax.scatter(md, smooth_dog[md], c='b', marker='x', s=40, label='Minima (DoG)', zorder=5)
-        if len(minima_hist) > 0:
-            mh = np.clip(minima_hist.astype(int), 0, len(smooth_dog) - 1)
-            ax.scatter(mh, smooth_dog[mh], c='c', marker='x', s=40, label='Minima (Smoothed Hist)', zorder=5)
-        for cm in centers_mid:
-            ax.axvline(x=int(cm), color='gray', linestyle='--', linewidth=0.8, alpha=0.6)
-        ax.set_title("Scaled DoG with Minima (DoG & Smoothed Histogram) and Midpoints")
-        ax.set_xlabel("Intensity bins (0–255)")
-        ax.set_ylabel("Amplitude")
-        ax.grid(alpha=0.3, linestyle='--', linewidth=0.5)
-        centered_plot(fig, "Figure 6. All minima markers aligned on DoG curve.")
-
-    with st.expander("Segmentation and Object Masks", expanded=False):
-        centered_visual(ground, "Figure 7. Ground threshold mask.")
-        for key, mask in sorted(masks.items(), key=lambda x: x[0]):
-            mask_bgr = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
-            centered_visual(mask_bgr, f"Figure 8.{key+1} Object Mask {key+1}.")
-        centered_visual(residual, "Figure 9. Residual/background mask.")
 
 elif run_process and not uploaded_file:
     st.warning("Please upload an image before running the measurement.")
