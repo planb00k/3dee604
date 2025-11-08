@@ -94,18 +94,32 @@ def load_depth_model():
     model = AutoModelForDepthEstimation.from_pretrained(model_id)
     return processor, model
 
-# --- Always-visible vertical text (letter-by-letter) ---
+# --- Clean, visible vertical text ---
 def vertical_text(img, text, org, color=(255, 255, 0)):
-    """Draw vertical text letter-by-letter, always visible."""
+    """Draws clean vertical text (rotated 90°), always visible."""
     x, y = org
     font = cv2.FONT_HERSHEY_SIMPLEX
-    scale, thickness = 0.9, 2
-    step = int(35 * scale)
-    y_cursor = max(30, y)
-    for ch in text:
-        cv2.putText(img, ch, (x, y_cursor), font, scale, (0, 0, 0), thickness + 2, cv2.LINE_AA)
-        cv2.putText(img, ch, (x, y_cursor), font, scale, color, thickness, cv2.LINE_AA)
-        y_cursor += step
+    scale, thickness = 1.0, 3
+
+    # Create text image
+    (tw, th), bl = cv2.getTextSize(text, font, scale, thickness)
+    text_img = np.zeros((th + bl + 20, tw + 20, 3), dtype=np.uint8)
+    cv2.putText(text_img, text, (10, th + 10), font, scale, (0, 0, 0), thickness + 2)
+    cv2.putText(text_img, text, (10, th + 10), font, scale, color, thickness)
+
+    # Rotate 90° clockwise
+    M = cv2.getRotationMatrix2D((text_img.shape[1] / 2, text_img.shape[0] / 2), 90, 1)
+    rotated = cv2.warpAffine(text_img, M, (text_img.shape[0], text_img.shape[1]))
+
+    # Clamp inside frame
+    h, w = rotated.shape[:2]
+    y = max(10, min(y, img.shape[0] - h - 10))
+    x = max(10, min(x, img.shape[1] - w - 10))
+
+    mask = np.any(rotated > 10, axis=-1)
+    roi = img[y:y + h, x:x + w]
+    roi[mask] = rotated[mask]
+    img[y:y + h, x:x + w] = roi
     return img
 
 # ---------------- Run Process ----------------
@@ -219,11 +233,11 @@ if run_process and uploaded_file:
         cv2.rectangle(temp, tl, br, (0, 255, 0), 2)
         bboxes.append([tl, br])
 
-        # Vertical "Length" text always visible
+        # Draw vertical "Length"
         lx, ly = tl
         temp = vertical_text(temp, f"Length {int(y)}mm", (lx + 10, ly + 40), color=(255, 255, 0))
 
-        # Width label
+        # Draw width
         wx, wy = tl[0], br[1] - 15
         cv2.putText(temp, f"Width {int(x)}mm", (wx + 10, wy),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 3)
