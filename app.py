@@ -94,19 +94,27 @@ def load_depth_model():
     model = AutoModelForDepthEstimation.from_pretrained(model_id)
     return processor, model
 
-# --- Vertical Text Fix (safe inside frame) ---
+# --- Vertical Text (Guaranteed visible) ---
 def vertical_text(img, text, org):
+    """Draw vertical text safely inside frame (visible for all positions)."""
     x, y = org
     font = cv2.FONT_HERSHEY_SIMPLEX
-    scale, thickness = 0.8, 2
+    scale, thickness = 0.9, 2
+    color = (0, 255, 0)
+
+    # debug line to confirm visibility — remove later if not needed
+    cv2.line(img, (x, y), (x, y + 120), (0, 255, 0), 1)
+
     (tw, th), bl = cv2.getTextSize(text, font, scale, thickness)
     text_img = np.zeros((th + bl, tw, 3), dtype=np.uint8)
-    cv2.putText(text_img, text, (0, th), font, scale, (0, 255, 0), thickness)
+    cv2.putText(text_img, text, (0, th), font, scale, color, thickness)
+
     M = cv2.getRotationMatrix2D((tw // 2, th // 2), 90, 1)
     rotated = cv2.warpAffine(text_img, M, (th, tw))
     h, w = rotated.shape[:2]
-    y = min(max(0, y), img.shape[0] - h - 1)
-    x = min(max(0, x), img.shape[1] - w - 1)
+    y = max(30, min(y, img.shape[0] - h - 30))
+    x = max(30, min(x, img.shape[1] - w - 30))
+
     roi = img[y:y + h, x:x + w]
     mask = rotated > 0
     roi[mask] = rotated[mask]
@@ -224,11 +232,9 @@ if run_process and uploaded_file:
         cv2.rectangle(temp, tl, br, (0, 255, 0), 2)
         bboxes.append([tl, br])
 
-        # Safe vertical Length label
+        # --- Fixed vertical label placement ---
         lx, ly = tl
-        lx_safe = min(max(lx + 10, 10), temp.shape[1] - 80)
-        ly_safe = min(max(ly + 20, 10), temp.shape[0] - 100)
-        temp = vertical_text(temp, f"Length {int(y)}mm", (lx_safe, ly_safe))
+        temp = vertical_text(temp, f"Length {int(y)}mm", (lx + 40, ly + 60))
 
         # Width label
         wx, wy = tl[0], br[1] - 15
@@ -256,56 +262,3 @@ if run_process and uploaded_file:
     # ---- Display ----
     st.header("Final Annotated Output")
     centered_visual(temp, "Figure 1. Final annotated image showing calculated Width, Length, and Depth values.")
-
-    bbox_only = depth_color.copy()
-    for i, (tl, br) in enumerate(bboxes):
-        cv2.rectangle(bbox_only, tl, br, (0, 255, 0), 2)
-        cv2.putText(bbox_only, f"Obj {i+1}", (tl[0], br[1]-10), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
-    centered_visual(bbox_only, "Figure 1B. Detected object bounding boxes before annotation.")
-
-    st.dataframe(pd.DataFrame(results), use_container_width=True)
-
-    st.markdown("---")
-    st.header("Intermediate Visualizations")
-
-    with st.expander("Original and Depth Representations", expanded=False):
-        centered_visual(initial_image, "Figure 2. Original RGB image.")
-        centered_visual(depth_gray, "Figure 3. Grayscale depth map.")
-        centered_visual(depth_color, "Figure 4. Colorized depth map (magma colormap).")
-
-    with st.expander("Depth Intensity Histogram & Smoothed", expanded=False):
-        fig, ax = plt.subplots(figsize=(8, 3))
-        ax.plot(hist, label="Raw Histogram", alpha=0.6)
-        ax.plot(smoothed_hist, label="Gaussian Smoothed (σ=1.89)", color='red', linewidth=2)
-        ax.set_title("Depth Intensity Distribution")
-        ax.set_xlabel("Pixel Intensity (0–255)")
-        ax.legend()
-        centered_plot(fig, "Figure 5. Raw and smoothed histogram.")
-
-    with st.expander("DoG Visualization", expanded=False):
-        fig, ax = plt.subplots(figsize=(10, 4))
-        ax.plot(scaled_dog, color='red', label='3×(Gσ1 - Gσ2)')
-        ax.plot(smooth_dog, color='green', label='1.8×Smoothed DoG (σ=1.5)')
-        if minima_dog.size > 0:
-            md = np.clip(minima_dog.astype(int), 0, len(smooth_dog) - 1)
-            ax.scatter(md, smooth_dog[md], c='b', marker='x', s=40, label='Minima (DoG)', zorder=5)
-        if minima_hist.size > 0:
-            mh = np.clip(minima_hist.astype(int), 0, len(smooth_dog) - 1)
-            ax.scatter(mh, smooth_dog[mh], c='c', marker='x', s=40, label='Minima (Smoothed Hist)', zorder=5)
-        for cm in centers_mid:
-            ax.axvline(x=int(cm), color='gray', linestyle='--', linewidth=0.8, alpha=0.6)
-        ax.set_title("Scaled DoG with Minima (DoG & Smoothed Histogram) and Midpoints")
-        ax.set_xlabel("Intensity bins (0–255)")
-        ax.set_ylabel("Amplitude")
-        ax.legend()
-        ax.grid(alpha=0.3, linestyle='--', linewidth=0.5)
-        centered_plot(fig, "Figure 6. All minima markers aligned on DoG curve.")
-
-    with st.expander("Segmentation and Object Masks", expanded=False):
-        centered_visual(ground, "Figure 7. Ground threshold mask.")
-        for key, mask in sorted(masks.items(), key=lambda x: x[0]):
-            centered_visual(mask, f"Figure 8.{key+1} Object Mask {key+1}.")
-        centered_visual(residual, "Figure 9. Residual/background mask.")
-
-elif run_process and not uploaded_file:
-    st.warning("Please upload an image before running the measurement.")
