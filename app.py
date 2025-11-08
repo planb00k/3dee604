@@ -59,17 +59,6 @@ def centered_visual(img, caption=None, width=550):
       </div>
     </div>""",unsafe_allow_html=True)
 
-def centered_plot(fig,caption,width=700):
-    buf=io.BytesIO(); fig.savefig(buf,"png",bbox_inches="tight",dpi=150); buf.seek(0)
-    st.markdown(f"""
-    <div style='display:flex;flex-direction:column;align-items:center;margin-bottom:40px;'>
-      <img src="data:image/png;base64,{base64.b64encode(buf.read()).decode()}"
-           style='width:{width}px;border-radius:6px;'>
-      <div style='text-align:left;width:{width}px;margin-top:6px;'>
-        <p style='font-size:16px;font-weight:600;'>{caption or ''}</p>
-      </div>
-    </div>""",unsafe_allow_html=True)
-
 @st.cache_resource
 def load_depth_model():
     mid="depth-anything/Depth-Anything-V2-Small-hf"
@@ -77,22 +66,29 @@ def load_depth_model():
     mdl=AutoModelForDepthEstimation.from_pretrained(mid)
     return proc,mdl
 
-# ---------- fixed vertical text ----------
+# ---------- improved vertical text ----------
 def vertical_text(img, text, org, color=(255,255,0), angle=90):
-    """Rotated phrase, fully visible with outline and alpha blending."""
+    """Fully visible vertical text (rotated phrase with padding + alpha blend)."""
     font=cv2.FONT_HERSHEY_SIMPLEX; scale,thick=1,3
     (tw,th),_=cv2.getTextSize(text,font,scale,thick)
-    canvas_h,canvas_w=tw+40,th+40
+
+    pad=60
+    canvas_h,canvas_w=tw+pad*2,th+pad*2
     canvas=np.zeros((canvas_h,canvas_w,4),np.uint8)
-    org_x,org_y=20,canvas_h//2+th//2
+
+    org_x,org_y=pad,canvas_h//2+th//2
     cv2.putText(canvas,text,(org_x,org_y),font,scale,(0,0,0,255),thick+3,cv2.LINE_AA)
     cv2.putText(canvas,text,(org_x,org_y),font,scale,(*color,255),thick,cv2.LINE_AA)
+
     M=cv2.getRotationMatrix2D((canvas_w/2,canvas_h/2),angle,1.0)
     rot=cv2.warpAffine(canvas,M,(canvas_w,canvas_h),flags=cv2.INTER_LINEAR,borderValue=(0,0,0,0))
+
     x,y=org; h,w=rot.shape[:2]
-    h=min(h,img.shape[0]-y); w=min(w,img.shape[1]-x)
-    roi=img[y:y+h,x:x+w]; a=rot[:h,:w,3:]/255.0
-    roi[:]=(a*rot[:h,:w,:3]+(1-a)*roi).astype(np.uint8)
+    y=max(0,min(y,img.shape[0]-h))
+    x=max(0,min(x,img.shape[1]-w))
+    alpha=rot[:,:,3:]/255.0
+    roi=img[y:y+h,x:x+w]
+    roi[:]=(alpha*rot[:h,:w,:3]+(1-alpha)*roi).astype(np.uint8)
     img[y:y+h,x:x+w]=roi
     return img
 
@@ -161,7 +157,8 @@ if run_process and uploaded_file:
         x,y=view(dx,dy,rgb.shape[0],rgb.shape[1],camh)
         cv2.rectangle(temp,tl,br,(0,255,0),2)
         boxes.append([tl,br])
-        temp=vertical_text(temp,f"Length {int(y)} mm",(tl[0]+10,tl[1]+40),(255,255,0),90)
+        # slightly outside box so always visible
+        temp=vertical_text(temp,f"Length {int(y)} mm",(br[0]+15,tl[1]+20),(255,255,0),90)
         cv2.putText(temp,f"Width {int(x)} mm",(tl[0]+10,br[1]-15),
                     cv2.FONT_HERSHEY_SIMPLEX,1,(0,255,0),3)
         res_tab.append({"Object":i+1,"Width (mm)":int(x),"Length (mm)":int(y)})
@@ -170,7 +167,8 @@ if run_process and uploaded_file:
     for i in range(n):
         m=masks[i]//255
         val=dc[m==1].mean() if np.count_nonzero(m) else float(dc.mean())
-        if ref<val<min1: min1=val; mvals.append(val)
+        if ref<val<min1: min1=val
+        mvals.append(val)
     scale=float(min1-ref) if (min1-ref)!=0 else 1.0
     for i in range(n):
         d=(float(mvals[i]-ref)/scale)*ref_h
