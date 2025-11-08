@@ -17,7 +17,7 @@ st.set_page_config(page_title="3D Object Measurement", layout="wide")
 st.title("3D Object Measurement (Width, Length, Depth)")
 
 # -------------------------
-# Helper / UI components
+# Helper / UI Components
 # -------------------------
 def img_to_base64(img_bgr: np.ndarray, width: int) -> str:
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
@@ -25,8 +25,7 @@ def img_to_base64(img_bgr: np.ndarray, width: int) -> str:
     buf = io.BytesIO()
     pil.save(buf, format="PNG")
     data = base64.b64encode(buf.getvalue()).decode()
-    html = f'<img src="data:image/png;base64,{data}" style="display:block;margin:0 auto;width:{width}px;border-radius:6px;">'
-    return html
+    return f'<img src="data:image/png;base64,{data}" style="display:block;margin:0 auto;width:{width}px;border-radius:6px;">'
 
 def centered_visual(img_array, caption: str = None, width: int = 650):
     if isinstance(img_array, np.ndarray):
@@ -53,18 +52,17 @@ def centered_plot(fig: plt.Figure, caption: str = None, width: int = 800):
     buf.seek(0)
     data = base64.b64encode(buf.read()).decode()
     html_img = f'<img src="data:image/png;base64,{data}" style="display:block;margin:0 auto;width:{width}px;border-radius:6px;">'
-    html = f"""
+    st.markdown(f"""
     <div style="display:flex;flex-direction:column;align-items:center;margin-bottom:36px;">
         {html_img}
         <div style="text-align:left;width:{width}px;margin-top:6px;">
             <p style="font-size:18px;font-weight:bold;margin:0;padding:0;">{caption or ""}</p>
         </div>
     </div>
-    """
-    st.markdown(html, unsafe_allow_html=True)
+    """, unsafe_allow_html=True)
 
 # -------------------------
-# Model caching
+# Model Loading (cached)
 # -------------------------
 @st.cache_resource(show_spinner=False)
 def load_depth_model(model_id: str = "depth-anything/Depth-Anything-V2-Small-hf"):
@@ -75,19 +73,17 @@ def load_depth_model(model_id: str = "depth-anything/Depth-Anything-V2-Small-hf"
     return processor, model, device
 
 # -------------------------
-# Small CV helpers
+# Core Helper Functions
 # -------------------------
 def run_kmeans_safe(points: List[int], k: int) -> np.ndarray:
     pts = np.array(points).reshape(-1, 1).astype(float)
     if pts.shape[0] < k:
-        # fallback evenly spaced thresholds
         return np.sort(np.linspace(0, 255, k))
     kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
     kmeans.fit(pts)
     return np.sort(kmeans.cluster_centers_.reshape(-1))
 
 def small_area_remover(binary: np.ndarray) -> np.ndarray:
-    # expects binary mask 0/255
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
     output = np.zeros_like(binary)
     if num_labels > 1:
@@ -97,7 +93,6 @@ def small_area_remover(binary: np.ndarray) -> np.ndarray:
     return output
 
 def sad(mask: np.ndarray) -> Tuple[int, int, Tuple[int,int], Tuple[int,int]]:
-    # returns width px, height px, top-left (x,y), bottom-right (x,y)
     mask_u8 = (mask > 0).astype(np.uint8) * 255
     corners = cv2.goodFeaturesToTrack(mask_u8, 10, 0.05, 50)
     if corners is None:
@@ -111,8 +106,6 @@ def sad(mask: np.ndarray) -> Tuple[int, int, Tuple[int,int], Tuple[int,int]]:
     return x_max - x_min, y_max - y_min, (x_min, y_min), (x_max, y_max)
 
 def view(dx: float, dy: float, px: int, py: int, camh: float = 300.0, f: float = 6.5, viewport: List[float] = [6.144, 8.6], cx: float = 0.82, cy: float = 0.79) -> Tuple[float,float]:
-    # converts pixel delta to mm with simple rectangular pyramid approx
-    # px,py are image height and width (or whichever convention you pass)
     tx = (dx / px) * viewport[1]
     ty = (dy / py) * viewport[0]
     x = (camh / f) * tx
@@ -135,14 +128,8 @@ def vertical_text(img: np.ndarray, text: str, org: Tuple[int,int], font_scale: f
     h, w = rotated.shape[:2]
     place_x = x - w - 6
     place_y = y
-    if place_x < 0:
-        place_x = x + 6
-    if place_y + h > img.shape[0]:
-        place_y = max(0, img.shape[0] - h - 6)
-    if place_y < 0:
-        place_y = 0
-    if place_x < 0:
-        place_x = 0
+    place_x = max(0, place_x)
+    place_y = max(0, place_y)
     roi = img[place_y:place_y + h, place_x:place_x + w]
     if roi.shape[0] == h and roi.shape[1] == w:
         mask_rot = (rotated > 0)
@@ -158,119 +145,91 @@ def mean_depth(depthmap: np.ndarray, lt_p: Tuple[int,int], rb_p: Tuple[int,int])
     return float(np.mean(depthmap[ly:ry, lx:rx]))
 
 # -------------------------
-# Inputs
+# Input Panel
 # -------------------------
 with st.expander("Input Parameters", expanded=True):
     uploaded_file = st.file_uploader("Upload Image", type=["jpg", "png", "jpeg"])
-    relative_height_ratio = st.selectbox("Relative Height Ratio", ["low", "med", "high", "vhigh"])
     camh = st.number_input("Enter Camera Height (mm)", value=300)
     ref_h = st.number_input("Enter Reference Object Height (mm)", value=50)
     num_objects = st.number_input("Number of Objects", value=1, min_value=1, step=1)
     run_process = st.button("Run Measurement")
 
 # -------------------------
-# Main pipeline
+# Main Pipeline
 # -------------------------
 if run_process and uploaded_file:
     st.info("Processing image...")
 
-    # Open image
     image = Image.open(uploaded_file).convert("RGB")
     initial_image = np.array(image)
-    h_img, w_img = initial_image.shape[:2]
 
-    # Load model (cached)
-    try:
-        processor, model, device = load_depth_model()
-    except Exception as e:
-        st.error(f"Failed to load Depth model: {e}")
-        st.stop()
+    processor, model, device = load_depth_model()
 
-    # Prepare inputs and run
-    try:
-        inputs = processor(images=image, return_tensors="pt")
-        inputs = {k: v.to(device) for k, v in inputs.items()}
-        with torch.no_grad():
-            outputs = model(**inputs)
-        post_processed = processor.post_process_depth_estimation(outputs, target_sizes=[(image.height, image.width)])
-        depth_result = post_processed[0]
-    except Exception as e:
-        st.error(f"Depth inference failed: {e}")
-        st.stop()
+    inputs = processor(images=image, return_tensors="pt")
+    inputs = {k: v.to(device) for k, v in inputs.items()}
+    with torch.no_grad():
+        outputs = model(**inputs)
+    post_processed = processor.post_process_depth_estimation(outputs, target_sizes=[(image.height, image.width)])
+    depth = post_processed[0]["predicted_depth"].squeeze().cpu().numpy()
 
-    # Extract depth map (model-dependent keys)
-    if "predicted_depth" in depth_result:
-        depth = depth_result["predicted_depth"].squeeze().cpu().numpy()
-    elif "depth" in depth_result:
-        depth = depth_result["depth"].squeeze().cpu().numpy()
-    else:
-        st.error(f"Depth key missing in the model output. Keys: {list(depth_result.keys())}")
-        st.stop()
-
-    # Normalize depth for visualization & further processing
     depth_norm = (depth - depth.min()) / (depth.max() - depth.min() + 1e-8)
     depth_gray = (depth_norm * 255).astype(np.uint8)
     magma = plt.cm.get_cmap("magma")
     depth_color = (magma(depth_norm)[:, :, :3] * 255).astype(np.uint8)
     depth_color = cv2.cvtColor(depth_color, cv2.COLOR_RGB2BGR)
 
-    # Histogram & smoothing
     gray = cv2.cvtColor(depth_color, cv2.COLOR_BGR2GRAY)
     hist = cv2.calcHist([gray], [0], None, [256], [0, 256]).flatten()
     smoothed_hist = gaussian_filter1d(hist, sigma=1.89)
 
-    # low_bound selection from UI
-    if relative_height_ratio == "low":
-        low_bound = 110
-    elif relative_height_ratio == "med":
-        low_bound = 100
-    elif relative_height_ratio == "high":
-        low_bound = 80
-    else:
-        low_bound = 60
-
-    # Minima on smoothed histogram
-    deriv_hist = np.gradient(smoothed_hist[low_bound:])
-    zc_hist = np.where(np.diff(np.sign(deriv_hist)))[0]
-    minima_hist = np.array([i for i in zc_hist if (i - 1) >= 0 and (i + 1) < len(deriv_hist) and deriv_hist[i - 1] < 0 and deriv_hist[i + 1] > 0]).astype(int) + low_bound
-    if minima_hist.size == 0:
-        minima_hist = np.array([int(np.argmin(smoothed_hist))])
-
-    # DoG
-    sigma1 = 3.76
-    sigma2 = 1.8
-    sm1 = gaussian_filter1d(hist, sigma=sigma1)
-    sm2 = gaussian_filter1d(hist, sigma=sigma2)
+    # -------------------------
+    # Adaptive DoG extrema detection
+    # -------------------------
+    sigma1, sigma2 = 3.76, 1.8
+    sm1, sm2 = gaussian_filter1d(hist, sigma=sigma1), gaussian_filter1d(hist, sigma=sigma2)
     dog = sm1 - sm2
     smooth_dog = gaussian_filter1d(dog, sigma=1.5)
 
-    deriv_dog = np.gradient(smooth_dog)
-    zc_dog = np.where(np.diff(np.sign(deriv_dog)))[0]
-    maxima_dog = np.array([i for i in zc_dog if deriv_dog[i - 1] > 0 and deriv_dog[i + 1] < 0]).astype(int)
-    minima_dog = np.array([i for i in zc_dog if deriv_dog[i - 1] < 0 and deriv_dog[i + 1] > 0]).astype(int)
+    hist_energy = hist / np.sum(hist)
+    cum_energy = np.cumsum(hist_energy)
+    low_bound = np.searchsorted(cum_energy, 0.05)
+    upper_bound = np.searchsorted(cum_energy, 0.95)
+    low_bound, upper_bound = max(20, low_bound), min(250, upper_bound)
+
+    derivative_dog = np.gradient(smooth_dog[low_bound:upper_bound])
+    zero_crossings = np.where(np.diff(np.sign(derivative_dog)))[0]
+    maxima_dog = np.array([i for i in zero_crossings if derivative_dog[i - 1] > 0 and derivative_dog[i + 1] < 0]).astype(int) + low_bound
+    minima_dog = np.array([i for i in zero_crossings if derivative_dog[i - 1] < 0 and derivative_dog[i + 1] > 0]).astype(int) + low_bound
+
+    amplitude_threshold = np.max(np.abs(smooth_dog)) * 0.05
+    minima_dog = np.array([m for m in minima_dog if abs(smooth_dog[m]) > amplitude_threshold])
+    maxima_dog = np.array([m for m in maxima_dog if abs(smooth_dog[m]) > amplitude_threshold])
+
     if minima_dog.size == 0:
         minima_dog = np.array([int(np.argmin(smooth_dog))])
     if maxima_dog.size == 0:
         maxima_dog = np.array([int(np.argmax(smooth_dog))])
 
-    # KMeans centers on minima
-    centers_hist = run_kmeans_safe(minima_hist, int(num_objects))
+    # -------------------------
+    # Threshold Clustering & Masking
+    # -------------------------
+    centers_hist = run_kmeans_safe(minima_dog, int(num_objects))
     centers_dog = run_kmeans_safe(minima_dog, int(num_objects))
     centers = np.sort(((centers_hist + centers_dog) / 2.0).reshape(-1))
 
-    # Build masks
-    ground_val = int(minima_hist[0]) if minima_hist.size > 0 else int(np.argmin(smoothed_hist))
+    ground_val = int(minima_dog[0])
     _, ground = cv2.threshold(gray, ground_val, 255, cv2.THRESH_BINARY)
     masks = {}
+
     if num_objects > 1:
         for i in range(1, int(num_objects)):
             thr = int(centers[i]) if i < len(centers) else int(centers[-1])
             _, thresh = cv2.threshold(gray, thr, 255, cv2.THRESH_BINARY)
             binary = cv2.subtract(ground, thresh)
             masks[i] = small_area_remover(binary)
-        sum_mask = np.zeros_like(gray, dtype=np.uint8)
+        sum_mask = np.zeros_like(gray)
         for i in range(1, int(num_objects)):
-            sum_mask = cv2.add(sum_mask, masks.get(i, np.zeros_like(gray)))
+            sum_mask = cv2.add(sum_mask, masks[i])
         residual = cv2.subtract(ground, sum_mask)
         _, residual = cv2.threshold(residual, 1, 255, cv2.THRESH_BINARY)
         masks[0] = small_area_remover(residual)
@@ -278,147 +237,58 @@ if run_process and uploaded_file:
         masks[0] = small_area_remover(ground)
         residual = np.zeros_like(gray)
 
-    # Measurement & annotation
+    # -------------------------
+    # Measurement Computation
+    # -------------------------
     temp = depth_color.copy()
-    bounding_boxes = []
-    results = []
+    bounding_boxes, results = [], []
 
     for i in range(int(num_objects)):
         mask_i = masks.get(i, np.zeros_like(gray))
         dx, dy, tl_p, br_p = sad(mask_i)
-        # Note: px, py passed as image height, width (keeps original code convention)
-        x_mm, y_mm = view(dx, dy, px=initial_image.shape[0], py=initial_image.shape[1], camh=float(camh))
-        # draw markers and boxes
-        if tl_p != (0, 0) or br_p != (0, 0):
-            cv2.circle(temp, tl_p, 5, (0, 255, 0), 2)
-            cv2.circle(temp, br_p, 5, (0, 255, 0), 2)
-            cv2.rectangle(temp, tl_p, br_p, (0, 255, 0), 2)
-        bounding_boxes.append([tl_p, br_p])
-        results.append({"Object": i + 1, "Width (mm)": int(x_mm), "Length (mm)": int(y_mm)})
-        # put text — width below box, length vertically
+        x_mm, y_mm = view(dx, dy, px=image.height, py=image.width, camh=float(camh))
         if tl_p != (0, 0):
+            cv2.rectangle(temp, tl_p, br_p, (0, 255, 0), 2)
             cv2.putText(temp, f"Width {int(x_mm)}mm", (tl_p[0], br_p[1] + 4), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 3)
             temp = vertical_text(temp, f"Length {int(y_mm)}mm", (tl_p[0], tl_p[1]))
+        bounding_boxes.append([tl_p, br_p])
+        results.append({"Object": i + 1, "Width (mm)": int(x_mm), "Length (mm)": int(y_mm)})
 
-    # Reference depth calculation
-    ref = mean_depth(depth_color, (0, 0), bounding_boxes[0][0] if bounding_boxes else (0,0))
-    mean_val = []
-    min1 = 255.0
-    for i in range(int(num_objects)):
-        _01img = (masks.get(i, np.zeros_like(gray)) // 255)
-        if np.any(_01img == 1):
-            meanint = float(depth_color[_01img == 1].mean())
-        else:
-            meanint = float(depth_color.mean())
-        if ref < meanint < min1:
-            min1 = meanint
-        mean_val.append(meanint)
-    scaler = float(min1 - ref) if (min1 - ref) != 0 else 1.0
+    ref = mean_depth(depth_color, (0, 0), bounding_boxes[0][0])
+    mean_val = [float(depth_color[(masks[i] // 255) == 1].mean()) if np.any(masks[i]) else float(depth_color.mean()) for i in range(int(num_objects))]
+    min1 = min([m for m in mean_val if m > ref], default=ref + 1)
+    scaler = (min1 - ref) if (min1 - ref) != 0 else 1.0
 
     for i in range(int(num_objects)):
-        temph = (float(mean_val[i] - ref) / scaler) * float(ref_h)
-        # place depth text at bounding box top-left if present
-        if i < len(bounding_boxes) and bounding_boxes[i][0] != (0,0):
-            cv2.putText(temp, f"Depth {int(temph)}mm", bounding_boxes[i][0], cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 3)
+        temph = (mean_val[i] - ref) / scaler * ref_h
+        cv2.putText(temp, f"Depth {int(temph)}mm", bounding_boxes[i][0], cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 3)
         results[i]["Depth (mm)"] = int(temph)
 
-    # Final Annotated Output
+    # -------------------------
+    # Display
+    # -------------------------
     st.header("Final Annotated Output")
     centered_visual(temp, "Figure 1. Final annotated image showing calculated Width, Length, and Depth values for detected objects.")
 
-    bbox_only = depth_color.copy()
-    for i, (tl, br) in enumerate(bounding_boxes):
-        cv2.rectangle(bbox_only, tl, br, (0, 255, 0), 2)
-        cv2.putText(bbox_only, f"{i+1}", (max(tl[0]-28,0), tl[1]+18), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0,255,0), 2)
-    centered_visual(bbox_only, "Figure 1B. Detected object bounding boxes before dimension annotation.")
-
-    # Results table
     df = pd.DataFrame(results)
-    st.markdown("<h5 style='font-size:18px;'>Object Dimension Measurements</h5>", unsafe_allow_html=True)
     st.dataframe(df.style.hide(axis='index').set_properties(**{'font-size': '14px'}), use_container_width=True)
 
-    st.markdown("---")
-    st.header("Intermediate Visualizations")
-
-    # Original & Depth
-    with st.expander("Original and Depth Representations", expanded=False):
-        centered_visual(initial_image, "Figure 2. Original RGB image used for depth analysis.")
-        centered_visual(depth_gray, "Figure 3. Grayscale depth map representing normalized pixel depth values.")
-        centered_visual(depth_color, "Figure 4. Colorized depth map using magma colormap for visualizing relative distances.")
-
-    # Histogram & DoG
-    with st.expander("Depth Intensity Histogram & DoG", expanded=False):
-        fig_hist, ax_hist = plt.subplots(figsize=(6, 3))
-        ax_hist.plot(hist, label="Raw Histogram", alpha=0.6, color='gray')
-        ax_hist.plot(smoothed_hist, label="Gaussian Smoothed Histogram (σ=1.89)", color='orange', linewidth=2)
-        ax_hist.set_title("Depth Intensity Distribution")
-        ax_hist.set_xlabel("Pixel Intensity (0–255)")
-        ax_hist.set_ylabel("Frequency")
-        ax_hist.legend()
-        centered_plot(fig_hist, "Figure 5. Raw and smoothed histogram showing the depth intensity distribution.")
-
+    # DoG Visualization
+    with st.expander("DoG Analysis", expanded=False):
         fig_comb, ax_comb = plt.subplots(figsize=(10, 4.5))
         ax_comb.plot(3 * dog, color='red', label="3× DoG (σ₁=3.76, σ₂=1.8)")
         ax_comb.plot(1.8 * smooth_dog, color='green', label="1.8× Smoothed DoG (σ=1.5)")
-        ax_comb.scatter(maxima_dog, (1.8 * smooth_dog)[maxima_dog], marker='x', color='c', s=60, label='Maxima (DoG)', zorder=5)
-        ax_comb.scatter(minima_dog, (1.8 * smooth_dog)[minima_dog], marker='x', color='b', s=60, label='Minima (DoG)', zorder=6)
-        ax_comb.set_title("Scaled DoG with Maxima's and Minima's on means: 3.76, 1.8")
+        ax_comb.scatter(maxima_dog, (1.8 * smooth_dog)[maxima_dog], color='cyan', marker='x', s=60, label='Maxima')
+        ax_comb.scatter(minima_dog, (1.8 * smooth_dog)[minima_dog], color='blue', marker='x', s=60, label='Minima')
+        ax_comb.axvline(x=low_bound, color='gray', linestyle='--', label=f"low={low_bound}")
+        ax_comb.axvline(x=upper_bound, color='gray', linestyle='--', label=f"up={upper_bound}")
+        ax_comb.set_title(f"Scaled DoG with Maxima's and Minima's (σ₁={sigma1}, σ₂={sigma2})")
         ax_comb.set_xlabel("Pixel Intensity")
         ax_comb.set_ylabel("Value")
         ax_comb.legend()
-        centered_plot(fig_comb, "Figure 5B. Scaled DoG with maxima and minima (σ₁ = 3.76, σ₂ = 1.8, post-smooth σ = 1.5).")
-
-    # KMeans threshold visuals
-    with st.expander("KMeans Threshold Fusion (Histogram + DoG)", expanded=False):
-        colors = ['blue', 'green', 'purple', 'brown', 'magenta']
-        fig_km_hist, ax_km_hist = plt.subplots(figsize=(6, 3))
-        ax_km_hist.plot(smoothed_hist, color='black', label="Smoothed Histogram")
-        for idx, c in enumerate(centers_hist):
-            color = colors[idx % len(colors)]
-            ax_km_hist.axvline(x=c, color=color, linestyle='--', linewidth=1.5, label=f"Hist Center {idx + 1} ({int(c)})")
-            ax_km_hist.text(int(c) + 3, max(smoothed_hist) * 0.05, f"H{idx+1}", color=color, fontsize=10)
-        ax_km_hist.set_title("KMeans on Histogram Minima")
-        ax_km_hist.set_xlabel("Pixel Intensity")
-        ax_km_hist.set_ylabel("Smoothed Frequency")
-        ax_km_hist.legend(fontsize=9)
-        centered_plot(fig_km_hist, "Figure 7. KMeans clustering applied to histogram minima for segmentation threshold selection.")
-
-        fig_km_dog, ax_km_dog = plt.subplots(figsize=(6, 3))
-        ax_km_dog.plot(smooth_dog, color='orange', label="Smoothed DoG")
-        for idx, c in enumerate(centers_dog):
-            color = colors[idx % len(colors)]
-            ax_km_dog.axvline(x=c, color=color, linestyle='--', linewidth=1.5, label=f"DoG Center {idx + 1} ({int(c)})")
-            ax_km_dog.text(int(c) + 3, max(smooth_dog) * 0.05, f"D{idx+1}", color=color, fontsize=10)
-        ax_km_dog.set_title("KMeans on DoG Minima")
-        ax_km_dog.set_xlabel("Pixel Intensity")
-        ax_km_dog.set_ylabel("DoG Value")
-        ax_km_dog.legend(fontsize=9)
-        centered_plot(fig_km_dog, "Figure 7B. KMeans clustering applied to smoothed DoG minima.")
-
-        fig_km_fused, ax_km_fused = plt.subplots(figsize=(6, 3))
-        ax_km_fused.plot(smoothed_hist, color='black', label="Smoothed Histogram")
-        for idx, c in enumerate(centers):
-            color = colors[idx % len(colors)]
-            ax_km_fused.axvline(x=c, color=color, linestyle='--', linewidth=1.5, label=f"Fused Center {idx + 1} ({int(c)})")
-            ax_km_fused.text(int(c) + 3, max(smoothed_hist) * 0.05, f"F{idx+1}", color=color, fontsize=10)
-        ax_km_fused.set_title("Fused Midpoint Thresholds (Histogram + DoG)")
-        ax_km_fused.set_xlabel("Pixel Intensity")
-        ax_km_fused.set_ylabel("Smoothed Frequency")
-        ax_km_fused.legend(fontsize=9)
-        centered_plot(fig_km_fused, "Figure 7C. Element-wise midpoint between histogram and DoG cluster centers used as final thresholds.")
-
-    # Segmentation and masks
-    with st.expander("Segmentation and Object Masks", expanded=False):
-        lap = cv2.filter2D(depth_color, -1, np.array([[-1,-1,-1],[-1,8,-1],[-1,-1,-1]]))
-        edges = cv2.Canny(depth_color, 100, 200)
-        centered_visual(lap, "Figure 8. Laplacian filtered depth color image.")
-        centered_visual(edges, "Figure 9. Canny edge map of depth color image.")
-        centered_visual(ground, "Figure 10. Ground threshold mask after initial binary segmentation.")
-        for key, mask in sorted(masks.items(), key=lambda x: x[0]):
-            centered_visual(mask, f"Figure 11.{key + 1} Object Mask {key + 1} after area refinement using connected components.")
-        centered_visual(residual, "Figure 12. Residual mask showing unassigned or background regions after segmentation.")
+        centered_plot(fig_comb, "Figure 5B. Adaptive Scaled DoG with maxima & minima, cropped by energy bounds.")
 
 elif run_process and not uploaded_file:
     st.warning("Please upload an image before running the measurement.")
 else:
-    st.info("Upload an image and set parameters in the Input Parameters panel, then press 'Run Measurement'.")
+    st.info("Upload an image and set parameters, then press 'Run Measurement'.")
