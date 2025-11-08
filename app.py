@@ -183,23 +183,28 @@ if run_process and uploaded_file:
 
     # ---------------- Display Section ----------------
     st.header("Final Annotated Output")
+    st.markdown("<div style='text-align:center;'>", unsafe_allow_html=True)
     st.image(temp, width=550)
-    st.markdown("<p style='font-size:22px; font-weight:bold; text-align:center;'>Figure 1. Final annotated image showing calculated Width, Length, and Depth values for detected objects.</p>", unsafe_allow_html=True)
+    st.markdown("<p style='font-size:20px; font-weight:bold; text-align:center;'>Figure 1. Final annotated image showing calculated Width, Length, and Depth values for detected objects.</p>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
     df = pd.DataFrame(results)
-    st.markdown("<h5 style='font-size:22px;'>Object Dimension Measurements</h5>", unsafe_allow_html=True)
+    st.markdown("<h5 style='font-size:20px;'>Object Dimension Measurements</h5>", unsafe_allow_html=True)
     st.dataframe(df.style.hide(axis='index').set_properties(**{'font-size': '16px'}), use_container_width=True)
 
     st.markdown("---")
     st.header("Intermediate Visualizations")
 
     with st.expander("Original and Depth Representations"):
-        st.image(initial_image, width=550)
-        st.markdown("<p style='font-size:22px; font-weight:bold; text-align:center;'>Figure 2. Original RGB image used for depth analysis.</p>", unsafe_allow_html=True)
-        st.image(depth_gray, width=550)
-        st.markdown("<p style='font-size:22px; font-weight:bold; text-align:center;'>Figure 3. Grayscale depth map representing normalized pixel depth values.</p>", unsafe_allow_html=True)
-        st.image(depth_color, width=550)
-        st.markdown("<p style='font-size:22px; font-weight:bold; text-align:center;'>Figure 4. Colorized depth map using magma colormap for visualizing relative distances.</p>", unsafe_allow_html=True)
+        for img, caption in [
+            (initial_image, "Figure 2. Original RGB image used for depth analysis."),
+            (depth_gray, "Figure 3. Grayscale depth map representing normalized pixel depth values."),
+            (depth_color, "Figure 4. Colorized depth map using magma colormap for visualizing relative distances.")
+        ]:
+            st.markdown("<div style='text-align:center;'>", unsafe_allow_html=True)
+            st.image(img, width=550)
+            st.markdown(f"<p style='font-size:20px; font-weight:bold; text-align:center;'>{caption}</p>", unsafe_allow_html=True)
+            st.markdown("</div>", unsafe_allow_html=True)
 
     with st.expander("Depth Intensity Histogram"):
         fig_hist, ax_hist = plt.subplots(figsize=(6, 3))
@@ -209,8 +214,10 @@ if run_process and uploaded_file:
         ax_hist.set_xlabel("Pixel Intensity (0–255)")
         ax_hist.set_ylabel("Frequency")
         ax_hist.legend()
+        st.markdown("<div style='text-align:center;'>", unsafe_allow_html=True)
         st.pyplot(fig_hist)
-        st.markdown("<p style='font-size:22px; font-weight:bold; text-align:center;'>Figure 5. Raw and smoothed histogram showing intensity distribution of the grayscale depth map.</p>", unsafe_allow_html=True)
+        st.markdown("<p style='font-size:20px; font-weight:bold; text-align:center;'>Figure 5. Raw and smoothed histogram showing intensity distribution of the grayscale depth map.</p>", unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
 
     with st.expander("Derivative (DoG) Analysis"):
         fig_dog, ax_dog = plt.subplots(figsize=(6, 3))
@@ -221,8 +228,10 @@ if run_process and uploaded_file:
         ax_dog.set_xlabel("Histogram Bin Index (Offset)")
         ax_dog.set_ylabel("Gradient Magnitude")
         ax_dog.legend()
+        st.markdown("<div style='text-align:center;'>", unsafe_allow_html=True)
         st.pyplot(fig_dog)
-        st.markdown("<p style='font-size:22px; font-weight:bold; text-align:center;'>Figure 6. Derivative of Gaussian showing gradient transitions used for segmentation threshold detection.</p>", unsafe_allow_html=True)
+        st.markdown("<p style='font-size:20px; font-weight:bold; text-align:center;'>Figure 6. Derivative of Gaussian showing gradient transitions used for segmentation threshold detection.</p>", unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
 
     with st.expander("KMeans Clustering Overview"):
         fig_km, ax_km = plt.subplots(figsize=(6, 3))
@@ -233,17 +242,22 @@ if run_process and uploaded_file:
         ax_km.set_xlabel("Pixel Intensity")
         ax_km.set_ylabel("Smoothed Frequency")
         ax_km.legend()
+        st.markdown("<div style='text-align:center;'>", unsafe_allow_html=True)
         st.pyplot(fig_km)
-        st.markdown("<p style='font-size:22px; font-weight:bold; text-align:center;'>Figure 7. KMeans clustering applied to histogram minima for automatic segmentation threshold selection.</p>", unsafe_allow_html=True)
+        st.markdown("<p style='font-size:20px; font-weight:bold; text-align:center;'>Figure 7. KMeans clustering applied to histogram minima for automatic segmentation threshold selection.</p>", unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
 
     with st.expander("Segmentation and Object Masks"):
-        st.image(ground, width=550)
-        st.markdown("<p style='font-size:22px; font-weight:bold; text-align:center;'>Figure 8. Ground threshold mask after initial binary segmentation.</p>", unsafe_allow_html=True)
+        figures = [(ground, "Figure 8. Ground threshold mask after initial binary segmentation.")]
         for i, mask in masks.items():
-            st.image(mask, width=550)
-            st.markdown(f"<p style='font-size:22px; font-weight:bold; text-align:center;'>Figure 9.{i + 1} Object Mask {i + 1} after area refinement using connected components.</p>", unsafe_allow_html=True)
-        st.image(residual, width=550)
-        st.markdown("<p style='font-size:22px; font-weight:bold; text-align:center;'>Figure 10. Residual mask showing unassigned or background regions after segmentation.</p>", unsafe_allow_html=True)
+            figures.append((mask, f"Figure 9.{i + 1} Object Mask {i + 1} after area refinement using connected components."))
+        figures.append((residual, "Figure 10. Residual mask showing unassigned or background regions after segmentation."))
+
+        for img, caption in figures:
+            st.markdown("<div style='text-align:center;'>", unsafe_allow_html=True)
+            st.image(img, width=550)
+            st.markdown(f"<p style='font-size:20px; font-weight:bold; text-align:center;'>{caption}</p>", unsafe_allow_html=True)
+            st.markdown("</div>", unsafe_allow_html=True)
 
 elif run_process and not uploaded_file:
     st.warning("Please upload an image before running the measurement.")
