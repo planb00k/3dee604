@@ -94,28 +94,27 @@ def load_depth_model():
     model = AutoModelForDepthEstimation.from_pretrained(model_id)
     return processor, model
 
-# --- Vertical Text (now visible) ---
+# --- Improved Vertical Text ---
 def vertical_text(img, text, org, color=(255, 255, 0)):
-    """Draw visible vertical text inside frame."""
+    """Draws visible vertical text with outline and brightness mask."""
     x, y = org
     font = cv2.FONT_HERSHEY_SIMPLEX
-    scale, thickness = 0.8, 2
+    scale, thickness = 1.0, 3
 
     (tw, th), bl = cv2.getTextSize(text, font, scale, thickness)
-    text_img = np.zeros((th + bl + 10, tw + 10, 3), dtype=np.uint8)
-    cv2.putText(text_img, text, (5, th + 5), font, scale, color, thickness)
+    text_img = np.zeros((th + bl + 20, tw + 20, 3), dtype=np.uint8)
+    cv2.putText(text_img, text, (10, th + 10), font, scale, (0, 0, 0), thickness + 2)  # black outline
+    cv2.putText(text_img, text, (10, th + 10), font, scale, color, thickness)
 
-    # Rotate 90° clockwise
     M = cv2.getRotationMatrix2D((text_img.shape[1] / 2, text_img.shape[0] / 2), 90, 1)
     rotated = cv2.warpAffine(text_img, M, (text_img.shape[0], text_img.shape[1]))
-    h, w = rotated.shape[:2]
 
-    # Clamp inside frame
+    h, w = rotated.shape[:2]
     y = max(10, min(y, img.shape[0] - h - 10))
     x = max(10, min(x, img.shape[1] - w - 10))
 
+    mask = np.any(rotated > 15, axis=-1)
     roi = img[y:y + h, x:x + w]
-    mask = rotated > 0
     roi[mask] = rotated[mask]
     img[y:y + h, x:x + w] = roi
     return img
@@ -231,11 +230,11 @@ if run_process and uploaded_file:
         cv2.rectangle(temp, tl, br, (0, 255, 0), 2)
         bboxes.append([tl, br])
 
-        # Draw vertical Length label (cyan)
+        # Draw Length (outlined cyan vertical)
         lx, ly = tl
-        temp = vertical_text(temp, f"Length {int(y)}mm", (lx + 35, ly + 40), color=(255, 255, 0))
+        temp = vertical_text(temp, f"Length {int(y)}mm", (lx + 10, ly + 30), color=(255, 255, 0))
 
-        # Draw Width (green)
+        # Draw Width
         wx, wy = tl[0], br[1] - 15
         cv2.putText(temp, f"Width {int(x)}mm", (wx + 10, wy),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 3)
@@ -261,7 +260,7 @@ if run_process and uploaded_file:
 
     # ---- Display ----
     st.header("Final Annotated Output")
-    centered_visual(temp, "Figure 1. Final annotated image showing calculated Width, Length, and Depth values.")
+    centered_visual(temp, "Figure 1. Final annotated image showing Width, Length, and Depth values.")
 
     bbox_only = depth_color.copy()
     for i, (tl, br) in enumerate(bboxes):
@@ -304,7 +303,7 @@ if run_process and uploaded_file:
         ax.set_ylabel("Amplitude")
         ax.legend()
         ax.grid(alpha=0.3, linestyle='--', linewidth=0.5)
-        centered_plot(fig, "Figure 6. All minima markers aligned on DoG curve.")
+        centered_plot(fig, "Figure 6. DoG with aligned minima and midpoints.")
 
     with st.expander("Segmentation and Object Masks", expanded=False):
         centered_visual(ground, "Figure 7. Ground threshold mask.")
