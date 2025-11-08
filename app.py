@@ -14,7 +14,7 @@ import io
 st.set_page_config(page_title="3D Object Measurement", layout="wide")
 st.title("3D Object Measurement (Width, Length, Depth)")
 
-# ---------------- Input Section ----------------
+
 with st.expander("Input Parameters", expanded=True):
     uploaded_file = st.file_uploader("Upload Image", type=["jpg", "png", "jpeg"])
     relative_height_ratio = st.selectbox("Relative Height Ratio", ["low", "med", "high", "vhigh"])
@@ -80,7 +80,7 @@ if run_process and uploaded_file:
     if minima.size == 0:
         minima = np.array([np.argmin(smoothed_hist)])
 
-    # ---------------- KMeans Segmentation ----------------
+
     kmeans = KMeans(n_clusters=nom_of_objects, random_state=42)
     kmeans.fit(minima.reshape(-1, 1))
     centers = np.sort(kmeans.cluster_centers_.reshape(-1))
@@ -115,7 +115,7 @@ if run_process and uploaded_file:
         masks[0] = small_area_remover(ground)
         residual = np.zeros_like(gray)
 
-    # ---------------- Measurement Functions ----------------
+    
     def sad(mask):
         corners = cv2.goodFeaturesToTrack(mask, 10, 0.05, 50)
         if corners is None:
@@ -206,7 +206,6 @@ if run_process and uploaded_file:
         cv2.putText(temp, f"Depth {int(temph)}mm", bounding_boxes[i][0], cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 3)
         results[i]["Depth (mm)"] = int(temph)
 
-    # ---------------- Helper visual functions ----------------
     def centered_visual(img_array, caption=None, width=550):
         if isinstance(img_array, np.ndarray):
             img_pil = Image.fromarray(cv2.cvtColor(img_array, cv2.COLOR_BGR2RGB))
@@ -241,18 +240,18 @@ if run_process and uploaded_file:
         """
         st.markdown(html, unsafe_allow_html=True)
 
-    # ---------------- Display Section (full original visuals) ----------------
+    
     st.header("Final Annotated Output")
     centered_visual(temp, "Figure 1. Final annotated image showing calculated Width, Length, and Depth values for detected objects.")
 
-    # Bounding boxes before annotation
+  
     bbox_only = depth_color.copy()
     for i, (tl, br) in enumerate(bounding_boxes):
         cv2.rectangle(bbox_only, tl, br, (0, 255, 0), 2)
         cv2.putText(bbox_only, f"Obj {i+1}", (tl[0], br[1]-10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0,255,0), 2)
     centered_visual(bbox_only, "Figure 1B. Detected object bounding boxes before dimension annotation.")
 
-    # Object dimensions table
+  
     df = pd.DataFrame(results)
     st.markdown("<h5 style='font-size:18px;'>Object Dimension Measurements</h5>", unsafe_allow_html=True)
     st.dataframe(df.style.hide(axis='index').set_properties(**{'font-size': '14px'}), use_container_width=True)
@@ -275,7 +274,6 @@ if run_process and uploaded_file:
         ax_hist.legend()
         centered_plot(fig_hist, "Figure 5. Raw and smoothed histogram showing the depth intensity distribution.")
 
-        # ✅ DoG computed from smoothed histogram (matches notebook)
         g1 = gaussian_filter1d(smoothed_hist, sigma=1.0)
         g2 = gaussian_filter1d(smoothed_hist, sigma=3.0)
         display_dog = g1 - g2
