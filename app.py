@@ -104,17 +104,39 @@ if run_process and uploaded_file:
     zero_crossings = np.where(np.diff(np.sign(derivative)))[0]
     minima = np.array([i for i in zero_crossings if (i - 1) >= 0 and (i + 1) < len(derivative) and derivative[i - 1] < 0 and derivative[i + 1] > 0]).astype(int) + low_bound
     if minima.size == 0:
-        minima = np.array([np.argmin(smoothed_hist)])
+        minima = np.array([int(np.argmin(smoothed_hist))])
 
-    sigma1 = 1.8
-    sigma2 = 3.0
+    sigma1 = 3.76
+    sigma2 = 1.8
     smoothed_hist1 = gaussian_filter1d(hist, sigma=sigma1)
     smoothed_hist2 = gaussian_filter1d(hist, sigma=sigma2)
     dog = smoothed_hist1 - smoothed_hist2
+    display_dog_red = 3.0 * dog
+    smooth_dog = gaussian_filter1d(dog, sigma=1.5)
+    display_smooth_dog = 1.8 * smooth_dog
 
-    kmeans = KMeans(n_clusters=nom_of_objects, random_state=42)
-    kmeans.fit(minima.reshape(-1, 1))
-    centers = np.sort(kmeans.cluster_centers_.reshape(-1))
+    lower = low_bound
+    upper = min(len(smooth_dog), 256)
+    derivative_dog = np.gradient(smooth_dog[lower:upper])
+    zc_dog = np.where(np.diff(np.sign(derivative_dog)))[0]
+    minima_dog = np.array([i for i in zc_dog if (i - 1) >= 0 and (i + 1) < len(derivative_dog) and derivative_dog[i - 1] < 0 and derivative_dog[i + 1] > 0]).astype(int) + lower
+    if minima_dog.size == 0:
+        minima_dog = np.array([int(np.argmin(smooth_dog))])
+
+    def run_kmeans_safe(points, k):
+        pts = np.array(points).reshape(-1, 1).astype(float)
+        if pts.shape[0] < k:
+            full_range = np.linspace(0, 255, 256)
+            approx = np.linspace(full_range.min(), full_range.max(), k)
+            return np.sort(approx)
+        kmeans = KMeans(n_clusters=k, random_state=42)
+        kmeans.fit(pts)
+        centers = np.sort(kmeans.cluster_centers_.reshape(-1))
+        return centers
+
+    centers_hist = run_kmeans_safe(minima, int(nom_of_objects))
+    centers_dog = run_kmeans_safe(minima_dog, int(nom_of_objects))
+    centers = np.sort(((centers_hist + centers_dog) / 2.0).reshape(-1))
 
     def small_area_remover(binary):
         num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
@@ -130,7 +152,8 @@ if run_process and uploaded_file:
     masks = {}
     if nom_of_objects > 1:
         for i in range(1, nom_of_objects):
-            _, thresh = cv2.threshold(gray, int(centers[i]), 255, cv2.THRESH_BINARY)
+            thr_val = int(centers[i])
+            _, thresh = cv2.threshold(gray, thr_val, 255, cv2.THRESH_BINARY)
             binary = cv2.subtract(ground, thresh)
             masks[i] = small_area_remover(binary)
         sum_mask = np.zeros_like(gray, dtype=np.uint8)
@@ -249,7 +272,7 @@ if run_process and uploaded_file:
     with st.expander("Depth Intensity Histogram", expanded=False):
         fig_hist, ax_hist = plt.subplots(figsize=(6, 3))
         ax_hist.plot(hist, label="Raw Histogram", alpha=0.6, color='gray')
-        ax_hist.plot(smoothed_hist, label="Gaussian Smoothed Histogram", color='orange', linewidth=2)
+        ax_hist.plot(smoothed_hist, label="Gaussian Smoothed Histogram (σ=1.89)", color='orange', linewidth=2)
         ax_hist.set_title("Depth Intensity Distribution")
         ax_hist.set_xlabel("Pixel Intensity (0–255)")
         ax_hist.set_ylabel("Frequency")
@@ -257,28 +280,27 @@ if run_process and uploaded_file:
         centered_plot(fig_hist, "Figure 5. Raw and smoothed histogram showing the depth intensity distribution.")
 
         fig_comb, ax_comb = plt.subplots(figsize=(6, 3))
-        ax_comb.plot(smoothed_hist1, label=f"Smoothed (σ={sigma1})")
-        ax_comb.plot(smoothed_hist2, label=f"Smoothed (σ={sigma2})")
-        ax_comb.plot(dog, color='red', label="DoG (smoothed1 - smoothed2)")
-        ax_comb.set_title("DoG (σ₁=1.8, σ₂=3) and Smoothed Histograms")
+        ax_comb.plot(display_dog_red, color='red', label=f"3x DoG (σ1=3.76, σ2=1.8)")
+        ax_comb.plot(display_smooth_dog, color='green', label=f"1.8x Smoothed DoG (σ=1.5)")
+        ax_comb.set_title("DoG (σ₁=3.76 − σ₂=1.8) and Smoothed DoG")
         ax_comb.set_xlabel("Pixel Intensity")
         ax_comb.set_ylabel("Value")
         ax_comb.legend()
-        centered_plot(fig_comb, "Figure 5B. Smoothed histograms and DoG plot.")
+        centered_plot(fig_comb, "Figure 5B. Scaled DoG (red) and smoothed DoG (green) for visualization.")
 
     with st.expander("Difference of Gaussians (DoG) Analysis", expanded=False):
         fig_dog, ax_dog = plt.subplots(figsize=(6, 3))
-        ax_dog.plot(dog, color='orange', linewidth=1.5, label="DoG (σ₁=1.8, σ₂=3)")
+        ax_dog.plot(smooth_dog, color='orange', linewidth=1.5, label="Smoothed DoG (σ=1.5)")
         ax_dog.axhline(0, color='gray', linestyle='--', linewidth=1)
-        ax_dog.set_title("Difference of Gaussians (DoG) – Bandpass Feature Extraction")
+        ax_dog.set_title("Smoothed DoG – used for minima extraction")
         ax_dog.set_xlabel("Pixel Intensity (0–255)")
         ax_dog.set_ylabel("DoG Value")
         ax_dog.legend()
-        centered_plot(fig_dog, "Figure 6. Difference of Gaussians (DoG) curve (visual-only).")
+        centered_plot(fig_dog, "Figure 6. Smoothed DoG curve (σ₁=3.76, σ₂=1.8, post-smooth σ=1.5).")
 
         fig_min, ax_min = plt.subplots(figsize=(6, 3))
         ax_min.plot(smoothed_hist, color='black', linewidth=2)
-        ax_min.scatter(minima, smoothed_hist[minima], color='red', s=40, label="Detected Minima")
+        ax_min.scatter(minima, smoothed_hist[minima], color='red', s=40, label="Histogram minima")
         for i, m in enumerate(minima):
             ax_min.text(m, smoothed_hist[m] + max(smoothed_hist) * 0.03, f"{i+1}", color='red', ha='center', fontsize=10)
         ax_min.set_title("Detected Minima on Smoothed Histogram")
@@ -287,19 +309,43 @@ if run_process and uploaded_file:
         ax_min.legend()
         centered_plot(fig_min, "Figure 6B. Located minima points on smoothed histogram used for segmentation threshold estimation.")
 
-    with st.expander("KMeans Clustering Overview", expanded=False):
-        fig_km, ax_km = plt.subplots(figsize=(6, 3))
-        ax_km.plot(smoothed_hist, color='black', label="Smoothed Histogram")
+    with st.expander("KMeans Threshold Fusion (Histogram + DoG)", expanded=False):
+        fig_km_hist, ax_km_hist = plt.subplots(figsize=(6, 3))
+        ax_km_hist.plot(smoothed_hist, color='black', label="Smoothed Histogram")
         colors = ['blue', 'green', 'purple', 'brown', 'magenta']
+        for idx, c in enumerate(centers_hist):
+            color = colors[idx % len(colors)]
+            ax_km_hist.axvline(x=c, color=color, linestyle='--', linewidth=1.5, label=f"Hist Center {idx + 1} ({int(c)})")
+            ax_km_hist.text(int(c) + 3, max(smoothed_hist) * 0.05, f"H{idx+1}", color=color, fontsize=10)
+        ax_km_hist.set_title("KMeans on Histogram Minima")
+        ax_km_hist.set_xlabel("Pixel Intensity")
+        ax_km_hist.set_ylabel("Smoothed Frequency")
+        ax_km_hist.legend(fontsize=9)
+        centered_plot(fig_km_hist, "Figure 7. KMeans clustering applied to histogram minima for segmentation threshold selection.")
+
+        fig_km_dog, ax_km_dog = plt.subplots(figsize=(6, 3))
+        ax_km_dog.plot(smooth_dog, color='orange', label="Smoothed DoG")
+        for idx, c in enumerate(centers_dog):
+            color = colors[idx % len(colors)]
+            ax_km_dog.axvline(x=c, color=color, linestyle='--', linewidth=1.5, label=f"DoG Center {idx + 1} ({int(c)})")
+            ax_km_dog.text(int(c) + 3, max(smooth_dog) * 0.05, f"D{idx+1}", color=color, fontsize=10)
+        ax_km_dog.set_title("KMeans on DoG Minima")
+        ax_km_dog.set_xlabel("Pixel Intensity")
+        ax_km_dog.set_ylabel("DoG Value")
+        ax_km_dog.legend(fontsize=9)
+        centered_plot(fig_km_dog, "Figure 7B. KMeans clustering applied to smoothed DoG minima.")
+
+        fig_km_fused, ax_km_fused = plt.subplots(figsize=(6, 3))
+        ax_km_fused.plot(smoothed_hist, color='black', label="Smoothed Histogram")
         for idx, c in enumerate(centers):
             color = colors[idx % len(colors)]
-            ax_km.axvline(x=c, color=color, linestyle='--', linewidth=1.5, label=f"Cluster Center {idx + 1} (Intensity={int(c)})")
-            ax_km.text(int(c) + 3, max(smoothed_hist) * 0.05, f"C{idx+1}", color=color, fontsize=10)
-        ax_km.set_title("KMeans clustering applied to histogram minima")
-        ax_km.set_xlabel("Pixel Intensity")
-        ax_km.set_ylabel("Smoothed Frequency")
-        ax_km.legend(fontsize=9)
-        centered_plot(fig_km, "Figure 7. KMeans clustering applied to histogram minima for segmentation threshold selection.")
+            ax_km_fused.axvline(x=c, color=color, linestyle='--', linewidth=1.5, label=f"Fused Center {idx + 1} ({int(c)})")
+            ax_km_fused.text(int(c) + 3, max(smoothed_hist) * 0.05, f"F{idx+1}", color=color, fontsize=10)
+        ax_km_fused.set_title("Fused Midpoint Thresholds (Histogram + DoG)")
+        ax_km_fused.set_xlabel("Pixel Intensity")
+        ax_km_fused.set_ylabel("Smoothed Frequency")
+        ax_km_fused.legend(fontsize=9)
+        centered_plot(fig_km_fused, "Figure 7C. Element-wise midpoint between histogram and DoG cluster centers used as final thresholds.")
 
     with st.expander("Segmentation and Object Masks", expanded=False):
         center_lap = cv2.filter2D(depth_color, -1, np.array([[-1,-1,-1],[-1,8,-1],[-1,-1,-1]]))
