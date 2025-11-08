@@ -166,7 +166,6 @@ if run_process and uploaded_file:
         cv2.putText(temp, f"Width {int(x)}mm", (tl_p[0], br_p[1]),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 3)
 
-    # compute depth values and add to results
     ref = mean_depth(depth_color, (0, 0), bounding_boxes[0][0])
     mean_val = []
     min1 = 255
@@ -223,10 +222,16 @@ if run_process and uploaded_file:
 
     # ---------------- Display Section ----------------
     st.header("Final Annotated Output")
-    # show annotated image (temp) — not raw depth_color
+
     centered_visual(temp, "Figure 1. Final annotated image showing calculated Width, Length, and Depth values for detected objects.")
 
-    # Use actual results (not empty frame)
+    # Bounding boxes only
+    bbox_only = depth_color.copy()
+    for i, (tl, br) in enumerate(bounding_boxes):
+        cv2.rectangle(bbox_only, tl, br, (0, 255, 0), 2)
+        cv2.putText(bbox_only, f"Obj {i+1}", (tl[0], br[1]-10), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
+    centered_visual(bbox_only, "Figure 1B. Detected object bounding boxes before dimension annotation.")
+
     df = pd.DataFrame(results)
     st.markdown("<h5 style='font-size:20px;'>Object Dimension Measurements</h5>", unsafe_allow_html=True)
     st.dataframe(df.style.hide(axis='index').set_properties(**{'font-size': '16px'}), use_container_width=True)
@@ -234,7 +239,6 @@ if run_process and uploaded_file:
     st.markdown("---")
     st.header("Intermediate Visualizations")
 
-    # Grouped expanders for logical clarity
     with st.expander("Original and Depth Representations", expanded=False):
         centered_visual(initial_image, "Figure 2. Original RGB image used for depth analysis.")
         centered_visual(depth_gray, "Figure 3. Grayscale depth map representing normalized pixel depth values.")
@@ -261,13 +265,27 @@ if run_process and uploaded_file:
         ax_dog.legend()
         centered_plot(fig_dog, "Figure 6. Derivative of Gaussian showing gradient transitions used for segmentation threshold detection.")
 
+        # Additional minima visualization
+        fig_min, ax_min = plt.subplots(figsize=(6, 3))
+        ax_min.plot(smoothed_hist, color='black', linewidth=2)
+        ax_min.scatter(minima, smoothed_hist[minima], color='red', s=40, label="Detected Minima")
+        for i, m in enumerate(minima):
+            ax_min.text(m, smoothed_hist[m]+max(smoothed_hist)*0.03, f"{i+1}", color='red', ha='center')
+        ax_min.set_title("Detected Minima on Smoothed Histogram")
+        ax_min.set_xlabel("Pixel Intensity")
+        ax_min.set_ylabel("Smoothed Frequency")
+        ax_min.legend()
+        centered_plot(fig_min, "Figure 6B. Located minima points on smoothed histogram showing segmentation thresholds.")
+
     with st.expander("KMeans Clustering Overview", expanded=False):
         fig_km, ax_km = plt.subplots(figsize=(6, 3))
         ax_km.plot(smoothed_hist, color='black', label="Smoothed Histogram")
+        colors = ['blue', 'green', 'purple', 'brown', 'magenta']
         for idx, c in enumerate(centers):
-            ax_km.axvline(x=c, color='blue', linestyle='--', linewidth=1.5,
-                          label=f"Cluster Center {idx + 1} (Intensity={int(c)})")
-        ax_km.set_title("Cluster-Based Threshold Identification")
+            color = colors[idx % len(colors)]
+            ax_km.axvline(x=c, color=color, linestyle='--', linewidth=1.5, label=f"Cluster Center {idx + 1} (Intensity={int(c)})")
+            ax_km.text(c + 3, max(smoothed_hist)*0.05, f"C{idx+1}", color=color, fontsize=10)
+        ax_km.set_title("Cluster-Based Threshold Identification with Labeled Centers")
         ax_km.set_xlabel("Pixel Intensity")
         ax_km.set_ylabel("Smoothed Frequency")
         ax_km.legend()
@@ -275,7 +293,6 @@ if run_process and uploaded_file:
 
     with st.expander("Segmentation and Object Masks", expanded=False):
         centered_visual(ground, "Figure 8. Ground threshold mask after initial binary segmentation.")
-        # iterate masks in sorted order of keys to ensure 9.1 then 9.2 etc.
         for key, mask in sorted(masks.items(), key=lambda x: x[0]):
             centered_visual(mask, f"Figure 9.{key + 1} Object Mask {key + 1} after area refinement using connected components.")
         centered_visual(residual, "Figure 10. Residual mask showing unassigned or background regions after segmentation.")
