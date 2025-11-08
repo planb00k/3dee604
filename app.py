@@ -183,10 +183,19 @@ if run_process and uploaded_file:
 
     # ---------------- Display Section ----------------
     st.header("Final Annotated Output")
-    st.markdown("<div style='text-align:center;'>", unsafe_allow_html=True)
-    st.image(temp, width=550)
-    st.markdown("<p style='font-size:20px; font-weight:bold; text-align:center;'>Figure 1. Final annotated image showing calculated Width, Length, and Depth values for detected objects.</p>", unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
+
+    def centered_visual(content_func, *args, caption=None, width=550):
+        st.markdown("<div style='text-align:center;'>", unsafe_allow_html=True)
+        content_func(*args, width=width)
+        st.markdown("</div>", unsafe_allow_html=True)
+        if caption:
+            st.markdown(
+                f"<div style='text-align:left; margin:auto; width:{width}px;'>"
+                f"<p style='font-size:20px; font-weight:bold;'>{caption}</p></div>",
+                unsafe_allow_html=True
+            )
+
+    centered_visual(st.image, temp, caption="Figure 1. Final annotated image showing calculated Width, Length, and Depth values for detected objects.")
 
     df = pd.DataFrame(results)
     st.markdown("<h5 style='font-size:20px;'>Object Dimension Measurements</h5>", unsafe_allow_html=True)
@@ -195,61 +204,56 @@ if run_process and uploaded_file:
     st.markdown("---")
     st.header("Intermediate Visualizations")
 
-    # Centered images for all stages
-    def centered_image(img, caption, width=550):
-        st.markdown("<div style='text-align:center;'>", unsafe_allow_html=True)
-        st.image(img, width=width)
-        st.markdown(f"<p style='font-size:20px; font-weight:bold; text-align:center;'>{caption}</p>", unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    def centered_plot(fig, caption):
+    def centered_plot(fig, caption, width=550):
         st.markdown("<div style='text-align:center;'>", unsafe_allow_html=True)
         st.pyplot(fig)
-        st.markdown(f"<p style='font-size:20px; font-weight:bold; text-align:center;'>{caption}</p>", unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
+        st.markdown(
+            f"<div style='text-align:left; margin:auto; width:{width}px;'>"
+            f"<p style='font-size:20px; font-weight:bold;'>{caption}</p></div>",
+            unsafe_allow_html=True
+        )
 
-    with st.expander("Original and Depth Representations"):
-        centered_image(initial_image, "Figure 2. Original RGB image used for depth analysis.")
-        centered_image(depth_gray, "Figure 3. Grayscale depth map representing normalized pixel depth values.")
-        centered_image(depth_color, "Figure 4. Colorized depth map using magma colormap for visualizing relative distances.")
+    # --- Images ---
+    centered_visual(st.image, initial_image, caption="Figure 2. Original RGB image used for depth analysis.")
+    centered_visual(st.image, depth_gray, caption="Figure 3. Grayscale depth map representing normalized pixel depth values.")
+    centered_visual(st.image, depth_color, caption="Figure 4. Colorized depth map using magma colormap for visualizing relative distances.")
 
-    with st.expander("Depth Intensity Histogram"):
-        fig_hist, ax_hist = plt.subplots(figsize=(6, 3))
-        ax_hist.plot(hist, label="Raw Histogram", alpha=0.6, color='gray')
-        ax_hist.plot(smoothed_hist, label="Gaussian Smoothed Histogram", color='red', linewidth=2)
-        ax_hist.set_title("Depth Intensity Distribution")
-        ax_hist.set_xlabel("Pixel Intensity (0–255)")
-        ax_hist.set_ylabel("Frequency")
-        ax_hist.legend()
-        centered_plot(fig_hist, "Figure 5. Raw and smoothed histogram showing intensity distribution of the grayscale depth map.")
+    # --- Graphs ---
+    fig_hist, ax_hist = plt.subplots(figsize=(6, 3))
+    ax_hist.plot(hist, label="Raw Histogram", alpha=0.6, color='gray')
+    ax_hist.plot(smoothed_hist, label="Gaussian Smoothed Histogram", color='red', linewidth=2)
+    ax_hist.set_title("Depth Intensity Distribution")
+    ax_hist.set_xlabel("Pixel Intensity (0–255)")
+    ax_hist.set_ylabel("Frequency")
+    ax_hist.legend()
+    centered_plot(fig_hist, "Figure 5. Raw and smoothed histogram showing intensity distribution of the grayscale depth map.")
 
-    with st.expander("Derivative (DoG) Analysis"):
-        fig_dog, ax_dog = plt.subplots(figsize=(6, 3))
-        ax_dog.plot(derivative, label="First Derivative (DoG)", color='orange', linewidth=1.5)
-        ax_dog.scatter(minima - low_bound, derivative[minima - low_bound], color='red', label="Detected Minima", zorder=5)
-        ax_dog.axhline(0, color='gray', linestyle='--', linewidth=1)
-        ax_dog.set_title("Derivative of Gaussian (DoG) – Edge Detection in Depth Histogram")
-        ax_dog.set_xlabel("Histogram Bin Index (Offset)")
-        ax_dog.set_ylabel("Gradient Magnitude")
-        ax_dog.legend()
-        centered_plot(fig_dog, "Figure 6. Derivative of Gaussian showing gradient transitions used for segmentation threshold detection.")
+    fig_dog, ax_dog = plt.subplots(figsize=(6, 3))
+    ax_dog.plot(derivative, label="First Derivative (DoG)", color='orange', linewidth=1.5)
+    ax_dog.scatter(minima - low_bound, derivative[minima - low_bound], color='red', label="Detected Minima", zorder=5)
+    ax_dog.axhline(0, color='gray', linestyle='--', linewidth=1)
+    ax_dog.set_title("Derivative of Gaussian (DoG) – Edge Detection in Depth Histogram")
+    ax_dog.set_xlabel("Histogram Bin Index (Offset)")
+    ax_dog.set_ylabel("Gradient Magnitude")
+    ax_dog.legend()
+    centered_plot(fig_dog, "Figure 6. Derivative of Gaussian showing gradient transitions used for segmentation threshold detection.")
 
-    with st.expander("KMeans Clustering Overview"):
-        fig_km, ax_km = plt.subplots(figsize=(6, 3))
-        ax_km.plot(smoothed_hist, color='black', label="Smoothed Histogram")
-        for idx, c in enumerate(centers):
-            ax_km.axvline(x=c, color='blue', linestyle='--', linewidth=1.5, label=f"Cluster Center {idx + 1} (Intensity={int(c)})")
-        ax_km.set_title("Cluster-Based Threshold Identification")
-        ax_km.set_xlabel("Pixel Intensity")
-        ax_km.set_ylabel("Smoothed Frequency")
-        ax_km.legend()
-        centered_plot(fig_km, "Figure 7. KMeans clustering applied to histogram minima for automatic segmentation threshold selection.")
+    fig_km, ax_km = plt.subplots(figsize=(6, 3))
+    ax_km.plot(smoothed_hist, color='black', label="Smoothed Histogram")
+    for idx, c in enumerate(centers):
+        ax_km.axvline(x=c, color='blue', linestyle='--', linewidth=1.5, label=f"Cluster Center {idx + 1} (Intensity={int(c)})")
+    ax_km.set_title("Cluster-Based Threshold Identification")
+    ax_km.set_xlabel("Pixel Intensity")
+    ax_km.set_ylabel("Smoothed Frequency")
+    ax_km.legend()
+    centered_plot(fig_km, "Figure 7. KMeans clustering applied to histogram minima for automatic segmentation threshold selection.")
 
-    with st.expander("Segmentation and Object Masks"):
-        centered_image(ground, "Figure 8. Ground threshold mask after initial binary segmentation.")
-        for i, mask in masks.items():
-            centered_image(mask, f"Figure 9.{i + 1} Object Mask {i + 1} after area refinement using connected components.")
-        centered_image(residual, "Figure 10. Residual mask showing unassigned or background regions after segmentation.")
+    # --- Masks ---
+    centered_visual(st.image, ground, caption="Figure 8. Ground threshold mask after initial binary segmentation.")
+    for i, mask in masks.items():
+        centered_visual(st.image, mask, caption=f"Figure 9.{i + 1} Object Mask {i + 1} after area refinement using connected components.")
+    centered_visual(st.image, residual, caption="Figure 10. Residual mask showing unassigned or background regions after segmentation.")
 
 elif run_process and not uploaded_file:
     st.warning("Please upload an image before running the measurement.")
