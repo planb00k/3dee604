@@ -55,16 +55,14 @@ if run_process and uploaded_file:
     depth_color = (plt.cm.magma(depth_norm)[:, :, :3] * 255).astype(np.uint8)
     depth_color = cv2.cvtColor(depth_color, cv2.COLOR_RGB2BGR)
 
-    # ---------------- Histogram & DoG (MATCHES REPORT FIGURE) ----------------
+    # ---------------- Histogram & DoG (Corrected) ----------------
     gray = cv2.cvtColor(depth_color, cv2.COLOR_BGR2GRAY)
     hist = cv2.calcHist([gray], [0], None, [256], [0, 256]).flatten()
-
     example_hist = hist.copy()
-    sigma1, sigma2 = 1.98, 3.76
 
+    sigma1, sigma2 = 1.98, 3.76
     smoothed_hist1 = gaussian_filter1d(example_hist, sigma=sigma1)
     smoothed_hist2 = gaussian_filter1d(example_hist, sigma=sigma2)
-
     dog = smoothed_hist1 - smoothed_hist2
     scaled_dog = 3 * dog
     smooth_dog = 1.8 * gaussian_filter1d(dog, sigma=1.5)
@@ -76,13 +74,8 @@ if run_process and uploaded_file:
 
     derivative1 = np.gradient(smooth_dog[low_bound:upper_bound])
     zero_crossings1 = np.where(np.diff(np.sign(derivative1)))[0]
-
-    maxima1 = np.array(
-        [i for i in zero_crossings1 if derivative1[i - 1] > 0 and derivative1[i + 1] < 0]
-    ).astype(int) + low_bound
-    minima1 = np.array(
-        [i for i in zero_crossings1 if derivative1[i - 1] < 0 and derivative1[i + 1] > 0]
-    ).astype(int) + low_bound
+    maxima1 = np.array([i for i in zero_crossings1 if derivative1[i-1] > 0 and derivative1[i+1] < 0]).astype(int) + low_bound
+    minima1 = np.array([i for i in zero_crossings1 if derivative1[i-1] < 0 and derivative1[i+1] > 0]).astype(int) + low_bound
 
     if len(minima1) >= nom_of_objects:
         kmeans1 = KMeans(n_clusters=nom_of_objects, random_state=42)
@@ -128,7 +121,7 @@ if run_process and uploaded_file:
         "minima1": minima1
     }
 
-    # ---------------- Measurement Functions ----------------
+    # ---------------- Measurement Functions (Old logic kept) ----------------
     def sad(camheight, depthmap, mask):
         corners = cv2.goodFeaturesToTrack(mask, 10, 0.05, 50)
         corners = np.int32(corners)
@@ -138,7 +131,7 @@ if run_process and uploaded_file:
         y_max = np.max(corners[:, :, 1])
         return x_max - x_min, y_max - y_min, (x_min, y_min), (x_max, y_max)
 
-    def view(dx, dy, px, py, camh=300, f=6.5, viewport=[6.144, 8.6], cx=0.82, cy=0.79):
+    def view(dx, dy, px, py, camh=300, f=5.42, viewport=[6.144, 8.6], cx=0.82, cy=0.79):
         tx = (dx / px) * viewport[1]
         ty = (dy / py) * viewport[0]
         x = (camh / f) * tx
@@ -155,15 +148,9 @@ if run_process and uploaded_file:
         text_img = np.zeros((text_h + baseline, text_w, 3), dtype=np.uint8)
         cv2.putText(text_img, text, (0, text_h), font, scale, (0, 255, 0), thickness)
         M = cv2.getRotationMatrix2D((text_w // 2, text_h // 2), angle, 1.0)
-        cos, sin = np.abs(M[0, 0]), np.abs(M[0, 1])
-        nW = int((text_h * sin) + (text_w * cos))
-        nH = int((text_h * cos) + (text_w * sin))
-        M[0, 2] += (nW / 2) - text_w // 2
-        M[1, 2] += (nH / 2) - text_h // 2
-        rotated = cv2.warpAffine(text_img, M, (nW, nH), flags=cv2.INTER_LINEAR, borderValue=(0, 0, 0))
+        rotated = cv2.warpAffine(text_img, M, (text_w, text_h), flags=cv2.INTER_LINEAR)
         h, w = rotated.shape[:2]
-        if y + h <= img.shape[0] and x + w <= img.shape[1]:
-            img[y:y+h, x:x+w] = np.where(rotated > 0, rotated, img[y:y+h, x:x+w])
+        img[y:y+h, x:x+w] = np.where(rotated > 0, rotated, img[y:y+h, x:x+w])
         return img
 
     def mean_depth(depth, lt_p, rb_p):
@@ -173,12 +160,11 @@ if run_process and uploaded_file:
 
     # ---------------- Measurement and Annotation ----------------
     temp = depth_color.copy()
-    bounding_boxes = []
-    results = []
+    bounding_boxes, results = [], []
 
     for i in range(nom_of_objects):
         dx, dy, tl_p, br_p = sad(camheight=camh, depthmap=temp, mask=masks[i])
-        x, y = view(dx, dy, px=initial_image.shape[1], py=initial_image.shape[0],
+        x, y = view(dx, dy, px=initial_image.shape[0], py=initial_image.shape[1],
                     f=5.42, viewport=[6.144, 8.6], camh=camh)
         cv2.rectangle(temp, tl_p, br_p, (0, 255, 0), 2)
         bounding_boxes.append([tl_p, br_p])
@@ -203,7 +189,7 @@ if run_process and uploaded_file:
                     bounding_boxes[i][0], cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 3)
         results[i]["Depth (mm)"] = int(temph)
 
-    # ---------------- Helper Functions ----------------
+    # ---------------- Display Section ----------------
     def centered_visual(img_array, caption=None, width=550):
         if isinstance(img_array, np.ndarray):
             img_pil = Image.fromarray(cv2.cvtColor(img_array, cv2.COLOR_BGR2RGB))
@@ -212,16 +198,11 @@ if run_process and uploaded_file:
         buffered = io.BytesIO()
         img_pil.save(buffered, format="PNG")
         img_b64 = base64.b64encode(buffered.getvalue()).decode()
-        html = f"""
-        <div style="display:flex; flex-direction:column; align-items:center; margin-bottom:80px;">
-            <img src="data:image/png;base64,{img_b64}" 
-                 style="display:block; margin:0 auto; width:{width}px; border-radius:6px;">
-            <div style="text-align:left; width:{width}px; margin-top:6px;">
-                <p style="font-size:20px; font-weight:bold;">{caption}</p>
-            </div>
-        </div>
-        """
-        st.markdown(html, unsafe_allow_html=True)
+        st.markdown(
+            f"<div style='text-align:center; margin-bottom:40px;'>"
+            f"<img src='data:image/png;base64,{img_b64}' style='width:{width}px; border-radius:6px;'>"
+            f"<p style='font-weight:bold; font-size:18px'>{caption}</p></div>",
+            unsafe_allow_html=True)
 
     def centered_plot(fig, caption, width=550):
         buf = io.BytesIO()
@@ -229,65 +210,28 @@ if run_process and uploaded_file:
         buf.seek(0)
         img_b64 = base64.b64encode(buf.read()).decode()
         plt.close(fig)
-        html = f"""
-        <div style="display:flex; flex-direction:column; align-items:center; margin-bottom:80px;">
-            <img src="data:image/png;base64,{img_b64}" 
-                 style="display:block; margin:0 auto; width:{width}px; border-radius:6px;">
-            <div style="text-align:left; width:{width}px; margin-top:6px;">
-                <p style="font-size:20px; font-weight:bold;">{caption}</p>
-            </div>
-        </div>
-        """
-        st.markdown(html, unsafe_allow_html=True)
+        st.markdown(
+            f"<div style='text-align:center; margin-bottom:40px;'>"
+            f"<img src='data:image/png;base64,{img_b64}' style='width:{width}px; border-radius:6px;'>"
+            f"<p style='font-weight:bold; font-size:18px'>{caption}</p></div>",
+            unsafe_allow_html=True)
 
-    # ---------------- Display Section ----------------
     st.header("Final Annotated Output")
-    centered_visual(temp, "Figure 1. Final annotated image showing calculated Width, Length, and Depth values for detected objects.")
-
-    bbox_only = depth_color.copy()
-    for i, (tl, br) in enumerate(bounding_boxes):
-        cv2.rectangle(bbox_only, tl, br, (0, 255, 0), 2)
-        cv2.putText(bbox_only, f"Obj {i+1}", (tl[0], br[1]-10), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
-    centered_visual(bbox_only, "Figure 1B. Detected object bounding boxes before dimension annotation.")
+    centered_visual(temp, "Figure 1. Final annotated image showing calculated Width, Length, and Depth values.")
 
     df = pd.DataFrame(results)
     st.markdown("<h5 style='font-size:20px;'>Object Dimension Measurements</h5>", unsafe_allow_html=True)
     st.dataframe(df.style.hide(axis='index').set_properties(**{'font-size': '16px'}), use_container_width=True)
 
-    st.markdown("---")
-    st.header("Intermediate Visualizations")
-
-    with st.expander("Original and Depth Representations", expanded=False):
-        centered_visual(initial_image, "Figure 2. Original RGB image used for depth analysis.")
-        centered_visual(depth_gray, "Figure 3. Grayscale depth map representing normalized pixel depth values.")
-        centered_visual(depth_color, "Figure 4. Colorized depth map using magma colormap for visualizing relative distances.")
-
-    with st.expander("Depth Intensity Histogram", expanded=False):
-        fig_hist, ax_hist = plt.subplots(figsize=(6, 3))
-        ax_hist.plot(hist, label="Raw Histogram", alpha=0.6, color='gray')
-        ax_hist.set_title("Depth Intensity Distribution")
-        ax_hist.set_xlabel("Pixel Intensity (0–255)")
-        ax_hist.set_ylabel("Frequency")
-        ax_hist.legend()
-        centered_plot(fig_hist, "Figure 5. Raw histogram showing intensity distribution of the grayscale depth map.")
-
-    with st.expander("Derivative (DoG) Analysis", expanded=False):
+    with st.expander("DoG Visualization", expanded=False):
         fig_dog, ax_dog = plt.subplots(figsize=(8, 4))
         ax_dog.plot(hist_components["scaled_dog"], color='red', label='3×(σ₁–σ₂) DoG')
         ax_dog.plot(hist_components["smooth_dog"], color='green', label='1.8×Smoothed DoG (σ=1.5)')
         ax_dog.plot(hist_components["maxima1"], 1.8*hist_components["smooth_dog"][hist_components["maxima1"]], 'cx', label='Maxima', markersize=6)
         ax_dog.plot(hist_components["minima1"], 1.8*hist_components["smooth_dog"][hist_components["minima1"]], 'bx', label='Minima', markersize=6)
         ax_dog.set_title("Scaled DoG with Maxima and Minima (σ₁=1.98, σ₂=3.76, σ_smooth=1.5)")
-        ax_dog.set_xlabel("Intensity bins (0–255)")
-        ax_dog.set_ylabel("Amplitude")
         ax_dog.legend()
-        centered_plot(fig_dog, "Figure 6. Scaled DoG showing maxima (cyan) and minima (blue) used for segmentation thresholding.")
-
-    with st.expander("Segmentation and Object Masks", expanded=False):
-        centered_visual(ground, "Figure 8. Ground threshold mask after initial binary segmentation.")
-        for key, mask in sorted(masks.items(), key=lambda x: x[0]):
-            centered_visual(mask, f"Figure 9.{key + 1} Object Mask {key + 1} after area refinement using connected components.")
-        centered_visual(residual, "Figure 10. Residual mask showing unassigned or background regions after segmentation.")
+        centered_plot(fig_dog, "Figure 6. Scaled DoG plot identical to report illustration.")
 
 elif run_process and not uploaded_file:
     st.warning("Please upload an image before running the measurement.")
