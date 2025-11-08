@@ -69,7 +69,7 @@ if run_process and uploaded_file:
     else:
         low_bound = 60
 
-    # --- Original gradient logic (kept for segmentation stability) ---
+   
     derivative = np.gradient(smoothed_hist[low_bound:])
     zero_crossings = np.where(np.diff(np.sign(derivative)))[0]
     minima = np.array([
@@ -135,7 +135,6 @@ if run_process and uploaded_file:
         y = (camh / f) * ty
         return [cx * x, cy * y]
 
-    # === ORIGINAL vertical_text behavior restored (top-left origin placement) ===
     def vertical_text(img, text, org):
         x, y = org
         font = cv2.FONT_HERSHEY_SIMPLEX
@@ -164,7 +163,7 @@ if run_process and uploaded_file:
             return float(depthmap.mean())
         return float(np.mean(depthmap[ly:ry, lx:rx]))
 
-    # ---------------- Measurement and Annotation ----------------
+    # Measurement and Annotation 
     temp = depth_color.copy()
     bounding_boxes = []
     results = []
