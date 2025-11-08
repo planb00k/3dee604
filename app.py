@@ -24,7 +24,7 @@ with st.expander("Input Parameters", expanded=True):
     nom_of_objects = st.number_input("Number of Objects", value=2, min_value=1)
     run_process = st.button("Run Measurement")
 
-# ---------------- Helpers ----------------
+# ---------------- Helper Functions ----------------
 def small_area_remover(binary):
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary, connectivity=8)
     output = np.zeros_like(binary)
@@ -93,6 +93,25 @@ def load_depth_model():
     processor = AutoImageProcessor.from_pretrained(model_id)
     model = AutoModelForDepthEstimation.from_pretrained(model_id)
     return processor, model
+
+# --- Vertical Text Fix (safe inside frame) ---
+def vertical_text(img, text, org):
+    x, y = org
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    scale, thickness = 0.8, 2
+    (tw, th), bl = cv2.getTextSize(text, font, scale, thickness)
+    text_img = np.zeros((th + bl, tw, 3), dtype=np.uint8)
+    cv2.putText(text_img, text, (0, th), font, scale, (0, 255, 0), thickness)
+    M = cv2.getRotationMatrix2D((tw // 2, th // 2), 90, 1)
+    rotated = cv2.warpAffine(text_img, M, (th, tw))
+    h, w = rotated.shape[:2]
+    y = min(max(0, y), img.shape[0] - h - 1)
+    x = min(max(0, x), img.shape[1] - w - 1)
+    roi = img[y:y + h, x:x + w]
+    mask = rotated > 0
+    roi[mask] = rotated[mask]
+    img[y:y + h, x:x + w] = roi
+    return img
 
 # ---------------- Run Process ----------------
 if run_process and uploaded_file:
@@ -188,20 +207,6 @@ if run_process and uploaded_file:
         tx, ty = (dx / px) * viewport[1], (dy / py) * viewport[0]
         return [cx * (camh / f) * tx, cy * (camh / f) * ty]
 
-    def vertical_text(img, text, org):
-        x, y = org
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        scale, thickness = 1, 3
-        (tw, th), bl = cv2.getTextSize(text, font, scale, thickness)
-        text_img = np.zeros((th + bl, tw, 3), dtype=np.uint8)
-        cv2.putText(text_img, text, (0, th), font, scale, (0, 255, 0), thickness)
-        M = cv2.getRotationMatrix2D((tw // 2, th // 2), 90, 1)
-        rotated = cv2.warpAffine(text_img, M, (th, tw))
-        h, w = rotated.shape[:2]
-        if y + h <= img.shape[0] and x + w <= img.shape[1]:
-            img[y:y+h, x:x+w] = np.where(rotated > 0, rotated, img[y:y+h, x:x+w])
-        return img
-
     def mean_depth(depth_map, lt, rb):
         lx, ly = lt
         rx, ry = rb
@@ -219,18 +224,20 @@ if run_process and uploaded_file:
         cv2.rectangle(temp, tl, br, (0, 255, 0), 2)
         bboxes.append([tl, br])
 
-        # Draw Length (vertical) and Width
+        # Safe vertical Length label
         lx, ly = tl
-        ly_safe = min(depth_color.shape[0] - 150, max(ly, 20))
-        lx_safe = max(lx + 10, 10)
+        lx_safe = min(max(lx + 10, 10), temp.shape[1] - 80)
+        ly_safe = min(max(ly + 20, 10), temp.shape[0] - 100)
         temp = vertical_text(temp, f"Length {int(y)}mm", (lx_safe, ly_safe))
+
+        # Width label
         wx, wy = tl[0], br[1] - 15
         cv2.putText(temp, f"Width {int(x)}mm", (wx + 10, wy),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 3)
 
         results.append({"Object": i + 1, "Width (mm)": int(x), "Length (mm)": int(y)})
 
-    # ---- Depth comes after width/length ----
+    # ---- Depth ----
     ref = mean_depth(depth_color, (0, 0), bboxes[0][0])
     mean_val, min1 = [], 255
     for i in range(n_clusters):
@@ -249,11 +256,13 @@ if run_process and uploaded_file:
     # ---- Display ----
     st.header("Final Annotated Output")
     centered_visual(temp, "Figure 1. Final annotated image showing calculated Width, Length, and Depth values.")
+
     bbox_only = depth_color.copy()
     for i, (tl, br) in enumerate(bboxes):
         cv2.rectangle(bbox_only, tl, br, (0, 255, 0), 2)
         cv2.putText(bbox_only, f"Obj {i+1}", (tl[0], br[1]-10), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
     centered_visual(bbox_only, "Figure 1B. Detected object bounding boxes before annotation.")
+
     st.dataframe(pd.DataFrame(results), use_container_width=True)
 
     st.markdown("---")
