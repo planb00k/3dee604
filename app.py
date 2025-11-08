@@ -1,4 +1,4 @@
-# app.py
+# app.py (corrected - uses histogram minima + adaptive DoG; ground_val fixed)
 import streamlit as st
 import cv2
 import numpy as np
@@ -121,15 +121,13 @@ def vertical_text(img: np.ndarray, text: str, org: Tuple[int,int], font_scale: f
     M = cv2.getRotationMatrix2D((text_w // 2, text_h // 2), angle, 1.0)
     cos, sin = np.abs(M[0, 0]), np.abs(M[0, 1])
     nW = int((text_h * sin) + (text_w * cos))
-    nH = int((text_h * cos) + (text_w * sin))
+    nH = int((text_h * cos) + (text_w * cos))
     M[0, 2] += (nW / 2) - text_w // 2
     M[1, 2] += (nH / 2) - text_h // 2
     rotated = cv2.warpAffine(text_img, M, (nW, nH), flags=cv2.INTER_LINEAR, borderValue=(0, 0, 0))
     h, w = rotated.shape[:2]
-    place_x = x - w - 6
-    place_y = y
-    place_x = max(0, place_x)
-    place_y = max(0, place_y)
+    place_x = max(0, x - w - 6)
+    place_y = max(0, y)
     roi = img[place_y:place_y + h, place_x:place_x + w]
     if roi.shape[0] == h and roi.shape[1] == w:
         mask_rot = (rotated > 0)
@@ -170,7 +168,13 @@ if run_process and uploaded_file:
     with torch.no_grad():
         outputs = model(**inputs)
     post_processed = processor.post_process_depth_estimation(outputs, target_sizes=[(image.height, image.width)])
-    depth = post_processed[0]["predicted_depth"].squeeze().cpu().numpy()
+    # handle different keys
+    if "predicted_depth" in post_processed[0]:
+        depth = post_processed[0]["predicted_depth"].squeeze().cpu().numpy()
+    elif "depth" in post_processed[0]:
+        depth = post_processed[0]["depth"].squeeze().cpu().numpy()
+    else:
+        depth = post_processed[0][list(post_processed[0].keys())[0]].squeeze().cpu().numpy()
 
     depth_norm = (depth - depth.min()) / (depth.max() - depth.min() + 1e-8)
     depth_gray = (depth_norm * 255).astype(np.uint8)
@@ -183,6 +187,18 @@ if run_process and uploaded_file:
     smoothed_hist = gaussian_filter1d(hist, sigma=1.89)
 
     # -------------------------
+    # Histogram minima detection (for background reference)
+    # -------------------------
+    # crop histogram when computing derivative (avoid low-energy flat tails)
+    low_hist_crop = 5
+    high_hist_crop = 250
+    deriv_hist = np.gradient(smoothed_hist[low_hist_crop:high_hist_crop])
+    zc_hist = np.where(np.diff(np.sign(deriv_hist)))[0]
+    minima_hist = np.array([i for i in zc_hist if (i - 1) >= 0 and (i + 1) < len(deriv_hist) and deriv_hist[i - 1] < 0 and deriv_hist[i + 1] > 0]).astype(int) + low_hist_crop
+    if minima_hist.size == 0:
+        minima_hist = np.array([int(np.argmin(smoothed_hist))])
+
+    # -------------------------
     # Adaptive DoG extrema detection
     # -------------------------
     sigma1, sigma2 = 3.76, 1.8
@@ -190,11 +206,11 @@ if run_process and uploaded_file:
     dog = sm1 - sm2
     smooth_dog = gaussian_filter1d(dog, sigma=1.5)
 
-    hist_energy = hist / np.sum(hist)
+    hist_energy = hist / (np.sum(hist) + 1e-12)
     cum_energy = np.cumsum(hist_energy)
-    low_bound = np.searchsorted(cum_energy, 0.05)
-    upper_bound = np.searchsorted(cum_energy, 0.95)
-    low_bound, upper_bound = max(20, low_bound), min(250, upper_bound)
+    low_bound = int(np.searchsorted(cum_energy, 0.05))
+    upper_bound = int(np.searchsorted(cum_energy, 0.95))
+    low_bound, upper_bound = max(10, low_bound), min(245, max(low_bound + 10, upper_bound))
 
     derivative_dog = np.gradient(smooth_dog[low_bound:upper_bound])
     zero_crossings = np.where(np.diff(np.sign(derivative_dog)))[0]
@@ -211,13 +227,28 @@ if run_process and uploaded_file:
         maxima_dog = np.array([int(np.argmax(smooth_dog))])
 
     # -------------------------
-    # Threshold Clustering & Masking
+    # KMeans fusion: use histogram minima + DoG minima
     # -------------------------
-    centers_hist = run_kmeans_safe(minima_dog, int(num_objects))
-    centers_dog = run_kmeans_safe(minima_dog, int(num_objects))
+    # choose minima from both sources (fall back to each other's data if empty)
+    minima_hist_for_k = minima_hist if minima_hist.size > 0 else minima_dog
+    minima_dog_for_k = minima_dog if minima_dog.size > 0 else minima_hist
+
+    centers_hist = run_kmeans_safe(minima_hist_for_k, int(num_objects))
+    centers_dog = run_kmeans_safe(minima_dog_for_k, int(num_objects))
     centers = np.sort(((centers_hist + centers_dog) / 2.0).reshape(-1))
 
-    ground_val = int(minima_dog[0])
+    # ensure centers length == num_objects
+    if centers.size < num_objects:
+        centers = np.sort(np.concatenate([centers, np.linspace(0, 255, int(num_objects - centers.size))]))
+
+    # choose ground_val from histogram minima (background)
+    # pick smallest reasonable minima (lowest intensity minima)
+    ground_candidates = np.concatenate([minima_hist_for_k, minima_dog_for_k]).flatten()
+    ground_val = int(np.min(ground_candidates)) if ground_candidates.size > 0 else int(np.argmin(smoothed_hist))
+
+    # -------------------------
+    # Thresholding & masks
+    # -------------------------
     _, ground = cv2.threshold(gray, ground_val, 255, cv2.THRESH_BINARY)
     masks = {}
 
@@ -229,7 +260,7 @@ if run_process and uploaded_file:
             masks[i] = small_area_remover(binary)
         sum_mask = np.zeros_like(gray)
         for i in range(1, int(num_objects)):
-            sum_mask = cv2.add(sum_mask, masks[i])
+            sum_mask = cv2.add(sum_mask, masks.get(i, np.zeros_like(gray)))
         residual = cv2.subtract(ground, sum_mask)
         _, residual = cv2.threshold(residual, 1, 255, cv2.THRESH_BINARY)
         masks[0] = small_area_remover(residual)
@@ -247,22 +278,37 @@ if run_process and uploaded_file:
         mask_i = masks.get(i, np.zeros_like(gray))
         dx, dy, tl_p, br_p = sad(mask_i)
         x_mm, y_mm = view(dx, dy, px=image.height, py=image.width, camh=float(camh))
-        if tl_p != (0, 0):
+        if tl_p != (0, 0) and br_p != (0, 0):
             cv2.rectangle(temp, tl_p, br_p, (0, 255, 0), 2)
             cv2.putText(temp, f"Width {int(x_mm)}mm", (tl_p[0], br_p[1] + 4), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 3)
             temp = vertical_text(temp, f"Length {int(y_mm)}mm", (tl_p[0], tl_p[1]))
         bounding_boxes.append([tl_p, br_p])
         results.append({"Object": i + 1, "Width (mm)": int(x_mm), "Length (mm)": int(y_mm)})
 
-    ref = mean_depth(depth_color, (0, 0), bounding_boxes[0][0])
-    mean_val = [float(depth_color[(masks[i] // 255) == 1].mean()) if np.any(masks[i]) else float(depth_color.mean()) for i in range(int(num_objects))]
-    min1 = min([m for m in mean_val if m > ref], default=ref + 1)
+    # compute reference depth using bounding box 0 top-left region as your pipeline did
+    ref = mean_depth(depth_norm if depth_norm.ndim == 2 else depth, (0, 0), (bounding_boxes[0][0] if len(bounding_boxes) > 0 else (0,0)))
+
+    mean_val = []
+    for i in range(int(num_objects)):
+        mask_bin = (masks.get(i, np.zeros_like(gray)) // 255).astype(bool)
+        if np.any(mask_bin):
+            # average over normalized depth (not the color map)
+            # map mask to depth_norm indices
+            meanint = float(depth_norm[mask_bin].mean()) if depth_norm.ndim == 2 else float(np.mean(depth_norm))
+        else:
+            meanint = float(np.mean(depth_norm))
+        mean_val.append(meanint)
+
+    # pick smallest mean > ref for scaling
+    min1_candidates = [m for m in mean_val if m > ref]
+    min1 = min(min1_candidates) if len(min1_candidates) > 0 else (ref + 1e-3)
     scaler = (min1 - ref) if (min1 - ref) != 0 else 1.0
 
     for i in range(int(num_objects)):
-        temph = (mean_val[i] - ref) / scaler * ref_h
-        cv2.putText(temp, f"Depth {int(temph)}mm", bounding_boxes[i][0], cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 3)
-        results[i]["Depth (mm)"] = int(temph)
+        temph = (mean_val[i] - ref) / scaler * float(ref_h)
+        if i < len(bounding_boxes):
+            cv2.putText(temp, f"Depth {int(temph)}mm", bounding_boxes[i][0], cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 3)
+        results[i]["Depth (mm)"] = int(np.round(temph))
 
     # -------------------------
     # Display
@@ -278,15 +324,18 @@ if run_process and uploaded_file:
         fig_comb, ax_comb = plt.subplots(figsize=(10, 4.5))
         ax_comb.plot(3 * dog, color='red', label="3× DoG (σ₁=3.76, σ₂=1.8)")
         ax_comb.plot(1.8 * smooth_dog, color='green', label="1.8× Smoothed DoG (σ=1.5)")
-        ax_comb.scatter(maxima_dog, (1.8 * smooth_dog)[maxima_dog], color='cyan', marker='x', s=60, label='Maxima')
-        ax_comb.scatter(minima_dog, (1.8 * smooth_dog)[minima_dog], color='blue', marker='x', s=60, label='Minima')
+        ax_comb.scatter(maxima_dog, (1.8 * smooth_dog)[maxima_dog], color='cyan', marker='x', s=60, label='Maxima (DoG)')
+        ax_comb.scatter(minima_dog, (1.8 * smooth_dog)[minima_dog], color='blue', marker='x', s=60, label='Minima (DoG)')
         ax_comb.axvline(x=low_bound, color='gray', linestyle='--', label=f"low={low_bound}")
         ax_comb.axvline(x=upper_bound, color='gray', linestyle='--', label=f"up={upper_bound}")
+        # also show histogram-derived minima for reference
+        for mh in minima_hist:
+            ax_comb.axvline(x=mh, color='magenta', linestyle=':', alpha=0.6)
         ax_comb.set_title(f"Scaled DoG with Maxima's and Minima's (σ₁={sigma1}, σ₂={sigma2})")
         ax_comb.set_xlabel("Pixel Intensity")
         ax_comb.set_ylabel("Value")
         ax_comb.legend()
-        centered_plot(fig_comb, "Figure 5B. Adaptive Scaled DoG with maxima & minima, cropped by energy bounds.")
+        centered_plot(fig_comb, "Figure. Adaptive Scaled DoG with maxima & minima, cropped by energy bounds.")
 
 elif run_process and not uploaded_file:
     st.warning("Please upload an image before running the measurement.")
