@@ -309,4 +309,18 @@ if run_process and uploaded_file:
             ax.scatter(mh, smooth_dog[mh], c='c', marker='x', s=40, label='Minima (Smoothed Hist)', zorder=5)
         for cm in centers_mid:
             ax.axvline(x=int(cm), color='gray', linestyle='--', linewidth=0.8, alpha=0.6)
-        ax.legend()
+        ax.set_title("Scaled DoG with Minima (DoG & Smoothed Histogram) and Midpoints")
+        ax.set_xlabel("Intensity bins (0–255)")
+        ax.set_ylabel("Amplitude")
+        ax.grid(alpha=0.3, linestyle='--', linewidth=0.5)
+        centered_plot(fig, "Figure 6. All minima markers aligned on DoG curve.")
+
+    with st.expander("Segmentation and Object Masks", expanded=False):
+        centered_visual(ground, "Figure 7. Ground threshold mask.")
+        for key, mask in sorted(masks.items(), key=lambda x: x[0]):
+            mask_bgr = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+            centered_visual(mask_bgr, f"Figure 8.{key+1} Object Mask {key+1}.")
+        centered_visual(residual, "Figure 9. Residual/background mask.")
+
+elif run_process and not uploaded_file:
+    st.warning("Please upload an image before running the measurement.")
