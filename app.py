@@ -94,18 +94,31 @@ def load_depth_model():
     model = AutoModelForDepthEstimation.from_pretrained(model_id)
     return processor, model
 
-# --- Always-visible vertical text (letter-by-letter) ---
-def vertical_text(img, text, org, color=(255, 255, 0)):
-    """Draw vertical text letter-by-letter, always visible."""
-    x, y = org
+# --- Improved vertical text (non-stacked, rotated)
+def vertical_text(img, text, org, color=(255, 255, 0), angle=90):
+    """Draw continuous vertical (rotated) text as a single line."""
     font = cv2.FONT_HERSHEY_SIMPLEX
-    scale, thickness = 0.9, 2
-    step = int(35 * scale)
-    y_cursor = max(30, y)
-    for ch in text:
-        cv2.putText(img, ch, (x, y_cursor), font, scale, (0, 0, 0), thickness + 2, cv2.LINE_AA)
-        cv2.putText(img, ch, (x, y_cursor), font, scale, color, thickness, cv2.LINE_AA)
-        y_cursor += step
+    scale, thickness = 1, 3
+    (tw, th), _ = cv2.getTextSize(text, font, scale, thickness)
+
+    # Create blank image for text
+    text_img = np.zeros((th + 10, tw + 10, 3), dtype=np.uint8)
+    cv2.putText(text_img, text, (5, th + 5), font, scale, color, thickness, cv2.LINE_AA)
+
+    # Rotate it vertically
+    M = cv2.getRotationMatrix2D((tw // 2, th // 2), angle, 1.0)
+    rotated = cv2.warpAffine(text_img, M, (tw, th))
+
+    # Overlay on main image
+    x, y = org
+    h, w = rotated.shape[:2]
+    y_end, x_end = min(y + h, img.shape[0]), min(x + w, img.shape[1])
+
+    img[y:y_end, x:x_end] = np.where(
+        rotated[:y_end - y, :x_end - x] > 0,
+        rotated[:y_end - y, :x_end - x],
+        img[y:y_end, x:x_end]
+    )
     return img
 
 # ---------------- Run Process ----------------
@@ -219,9 +232,9 @@ if run_process and uploaded_file:
         cv2.rectangle(temp, tl, br, (0, 255, 0), 2)
         bboxes.append([tl, br])
 
-        # Vertical "Length" text always visible
+        # Vertical "Length" text (rotated, not stacked)
         lx, ly = tl
-        temp = vertical_text(temp, f"Length {int(y)}mm", (lx + 10, ly + 40), color=(255, 255, 0))
+        temp = vertical_text(temp, f"Length {int(y)}mm", (lx + 10, ly + 40), color=(255, 255, 0), angle=90)
 
         # Width label
         wx, wy = tl[0], br[1] - 15
