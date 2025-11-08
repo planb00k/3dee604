@@ -356,22 +356,34 @@ if run_process and uploaded_file:
         ax_hist.legend()
         centered_plot(fig_hist, "Figure 5. Raw and smoothed histogram showing intensity distribution of the grayscale depth map.")
 
-    with st.expander("DoG (Report-style) Visualization", expanded=False):
-        fig_dog, ax_dog = plt.subplots(figsize=(10, 4))
-        ax_dog.plot(scaled_dog, color='red', label='3×(Gσ1 - Gσ2)')  # red scaled
-        ax_dog.plot(smooth_dog, color='green', label='1.8×Smoothed DoG (σ=1.5)')  # smoothed dog
-        # minima and maxima markers on smooth_dog (offset safe)
-        if len(hist_components["minima_dog"]) if "minima_dog" in locals() else len(minima_dog):
-            md = minima_dog if len(minima_dog) > 0 else np.array([])
-            ax_dog.plot(md, smooth_dog[md], 'bx', label='Minima (DoG)', markersize=6)
-        if len(minima_hist) > 0:
-            ax_dog.plot(minima_hist, smoothed_hist[minima_hist], 'cx', label='Minima (Smoothed Hist)', markersize=6)
-        # cluster centers and midpoints
-        ax_dog.set_title("Scaled DoG with Maxima and Minima (σ1=3.76, σ2=1.8) and midpoints")
-        ax_dog.set_xlabel("Intensity bins (0–255)")
-        ax_dog.set_ylabel("Amplitude")
-        ax_dog.legend()
-        centered_plot(fig_dog, "Figure 6. DoG + Smoothed-DoG showing minima used in segmentation (per write-up).")
+  with st.expander("DoG (Report-style) Visualization", expanded=False):
+    fig_dog, ax_dog = plt.subplots(figsize=(10, 4))
+
+    # Main curves
+    ax_dog.plot(scaled_dog, color='red', label='3×(Gσ1 - Gσ2)')
+    ax_dog.plot(smooth_dog, color='green', label='1.8×Smoothed DoG (σ=1.5)')
+
+    # Correct minima alignment
+    if "minima_dog" in locals() and len(minima_dog) > 0:
+        md = np.array(minima_dog, dtype=int)
+        valid_md = md[(md >= 0) & (md < len(smooth_dog))]
+        ax_dog.scatter(valid_md, smooth_dog[valid_md],
+                       c='b', marker='x', s=40, label='Minima (DoG)', zorder=5)
+
+    if "minima_hist" in locals() and len(minima_hist) > 0:
+        mh = np.array(minima_hist, dtype=int)
+        valid_mh = mh[(mh >= 0) & (mh < len(smoothed_hist))]
+        ax_dog.scatter(valid_mh, smoothed_hist[valid_mh],
+                       c='c', marker='x', s=40, label='Minima (Smoothed Hist)', zorder=5)
+
+    ax_dog.set_title("Scaled DoG with Maxima and Minima (σ₁=3.76, σ₂=1.8) and midpoints")
+    ax_dog.set_xlabel("Intensity bins (0–255)")
+    ax_dog.set_ylabel("Amplitude")
+    ax_dog.legend()
+    ax_dog.grid(alpha=0.3, linestyle='--', linewidth=0.5)
+
+    centered_plot(fig_dog,
+        "Figure 6. Scaled DoG with minima from both DoG and smoothed histogram curves .")
 
     with st.expander("Segmentation and Object Masks", expanded=False):
         centered_visual(ground, "Figure 7. Ground threshold mask after initial binary segmentation.")
