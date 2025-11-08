@@ -1,6 +1,7 @@
 import streamlit as st
 import cv2
 import numpy as np
+import pandas as pd
 from PIL import Image
 import torch
 import matplotlib.pyplot as plt
@@ -183,19 +184,22 @@ if run_process and uploaded_file:
     # ---------------- Display Section ----------------
     st.header("Final Annotated Output")
     st.image(temp, use_column_width=True)
-    st.caption("Figure 1. Final annotated image showing calculated Width, Length, and Depth values for detected objects.")
-    st.table(results)
+    st.markdown("<p style='font-size:22px; font-weight:bold;'>Figure 1. Final annotated image showing calculated Width, Length, and Depth values for detected objects.</p>", unsafe_allow_html=True)
+
+    df = pd.DataFrame(results)
+    st.markdown("<h5 style='font-size:24px;'>Object Dimension Measurements</h5>", unsafe_allow_html=True)
+    st.dataframe(df.style.hide(axis='index').set_properties(**{'font-size': '18px'}), use_container_width=True)
 
     st.markdown("---")
     st.header("Intermediate Visualizations")
 
     with st.expander("Original and Depth Representations"):
         st.image(initial_image, use_column_width=True)
-        st.caption("Figure 2. Original RGB image used for depth analysis.")
+        st.markdown("<p style='font-size:22px; font-weight:bold;'>Figure 2. Original RGB image used for depth analysis.</p>", unsafe_allow_html=True)
         st.image(depth_gray, use_column_width=True)
-        st.caption("Figure 3. Grayscale depth map representing normalized pixel depth values.")
+        st.markdown("<p style='font-size:22px; font-weight:bold;'>Figure 3. Grayscale depth map representing normalized pixel depth values.</p>", unsafe_allow_html=True)
         st.image(depth_color, use_column_width=True)
-        st.caption("Figure 4. Colorized depth map using magma colormap for visualizing relative distances.")
+        st.markdown("<p style='font-size:22px; font-weight:bold;'>Figure 4. Colorized depth map using magma colormap for visualizing relative distances.</p>", unsafe_allow_html=True)
 
     with st.expander("Depth Intensity Histogram"):
         fig_hist, ax_hist = plt.subplots()
@@ -206,7 +210,7 @@ if run_process and uploaded_file:
         ax_hist.set_ylabel("Frequency")
         ax_hist.legend()
         st.pyplot(fig_hist)
-        st.caption("Figure 5. Raw and smoothed histogram showing the intensity distribution of the grayscale depth map.")
+        st.markdown("<p style='font-size:22px; font-weight:bold;'>Figure 5. Raw and smoothed histogram showing the intensity distribution of the grayscale depth map.</p>", unsafe_allow_html=True)
 
     with st.expander("Derivative (DoG) Analysis"):
         fig_dog, ax_dog = plt.subplots()
@@ -218,7 +222,7 @@ if run_process and uploaded_file:
         ax_dog.set_ylabel("Gradient Magnitude")
         ax_dog.legend()
         st.pyplot(fig_dog)
-        st.caption("Figure 6. Derivative of Gaussian showing gradient transitions used for segmentation threshold detection.")
+        st.markdown("<p style='font-size:22px; font-weight:bold;'>Figure 6. Derivative of Gaussian showing gradient transitions used for segmentation threshold detection.</p>", unsafe_allow_html=True)
 
     with st.expander("KMeans Clustering Overview"):
         fig_km, ax_km = plt.subplots()
@@ -230,16 +234,16 @@ if run_process and uploaded_file:
         ax_km.set_ylabel("Smoothed Frequency")
         ax_km.legend()
         st.pyplot(fig_km)
-        st.caption("Figure 7. KMeans clustering applied to histogram minima for automatic segmentation threshold selection.")
+        st.markdown("<p style='font-size:22px; font-weight:bold;'>Figure 7. KMeans clustering applied to histogram minima for automatic segmentation threshold selection.</p>", unsafe_allow_html=True)
 
     with st.expander("Segmentation and Object Masks"):
         st.image(ground, use_column_width=True)
-        st.caption("Figure 8. Ground threshold mask after initial binary segmentation.")
+        st.markdown("<p style='font-size:22px; font-weight:bold;'>Figure 8. Ground threshold mask after initial binary segmentation.</p>", unsafe_allow_html=True)
         for i, mask in masks.items():
             st.image(mask, use_column_width=True)
-            st.caption(f"Figure 9.{i + 1} Object Mask {i + 1} after area refinement using connected components.")
+            st.markdown(f"<p style='font-size:22px; font-weight:bold;'>Figure 9.{i + 1} Object Mask {i + 1} after area refinement using connected components.</p>", unsafe_allow_html=True)
         st.image(residual, use_column_width=True)
-        st.caption("Figure 10. Residual mask showing unassigned or background regions after segmentation.")
+        st.markdown("<p style='font-size:22px; font-weight:bold;'>Figure 10. Residual mask showing unassigned or background regions after segmentation.</p>", unsafe_allow_html=True)
 
 elif run_process and not uploaded_file:
     st.warning("Please upload an image before running the measurement.")
