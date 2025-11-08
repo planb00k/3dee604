@@ -1,3 +1,4 @@
+# app.py
 import streamlit as st
 import cv2
 import numpy as np
@@ -92,38 +93,57 @@ def load_depth_model():
     model = AutoModelForDepthEstimation.from_pretrained(model_id)
     return processor, model
 
-
-# -------- FIXED vertical text (no clipping of "mm") ----------
+# -------- FIXED vertical text (safe + no cutoff) ----------
 def vertical_text(img, text, org, color=(255, 255, 0), angle=90):
-    """Draw vertical text with full visibility and anti-clipping."""
+    """Draw vertical text safely — no clipping, no shape mismatch."""
     font = cv2.FONT_HERSHEY_SIMPLEX
     scale, thick = 1, 3
     (tw, th), _ = cv2.getTextSize(text, font, scale, thick)
 
-    # create large enough transparent canvas
     pad = 150
-    canvas = np.zeros((tw + pad * 2, th + pad * 4, 4), dtype=np.uint8)
+    # canvas height/width chosen to give plenty of room for rotation
+    canvas_h = tw + pad * 2
+    canvas_w = th + pad * 4
+    canvas = np.zeros((canvas_h, canvas_w, 4), dtype=np.uint8)
 
     org_x = pad
-    org_y = (canvas.shape[0] + th) // 2
+    org_y = (canvas_h + th) // 2
     cv2.putText(canvas, text, (org_x, org_y), font, scale, (*color, 255), thick, cv2.LINE_AA)
 
-    # Rotate safely with padding
-    M = cv2.getRotationMatrix2D((canvas.shape[1] // 2, canvas.shape[0] // 2), angle, 1.0)
-    rot = cv2.warpAffine(canvas, M, (canvas.shape[1] * 2, canvas.shape[0] * 2),
-                         flags=cv2.INTER_LINEAR, borderValue=(0, 0, 0, 0))
+    # rotate with big output canvas to avoid clipping rotated text
+    out_w = canvas_w * 2
+    out_h = canvas_h * 2
+    M = cv2.getRotationMatrix2D((canvas_w // 2, canvas_h // 2), angle, 1.0)
+    rot = cv2.warpAffine(canvas, M, (out_w, out_h), flags=cv2.INTER_LINEAR, borderValue=(0, 0, 0, 0))
 
     x, y = org
     h, w = rot.shape[:2]
-    y = max(0, min(y, img.shape[0] - h))
-    x = max(0, min(x, img.shape[1] - w))
 
-    alpha = rot[:, :, 3:] / 255.0
-    roi = img[y:y + h, x:x + w]
-    blended = (alpha * rot[:, :, :3] + (1 - alpha) * roi).astype(np.uint8)
-    img[y:y + h, x:x + w] = blended
+    # Compute visible intersection between rot canvas and target image
+    x1 = max(0, x)
+    y1 = max(0, y)
+    x2 = min(x + w, img.shape[1])
+    y2 = min(y + h, img.shape[0])
+
+    # If there's nothing visible, skip
+    if x1 >= x2 or y1 >= y2:
+        return img
+
+    # Corresponding coordinates on rot
+    rot_x1 = max(0, -x)
+    rot_y1 = max(0, -y)
+    rot_x2 = rot_x1 + (x2 - x1)
+    rot_y2 = rot_y1 + (y2 - y1)
+
+    # Slicing and blending (ensure shapes match)
+    rot_slice = rot[rot_y1:rot_y2, rot_x1:rot_x2]
+    alpha = (rot_slice[:, :, 3:] / 255.0).astype(np.float32)
+    rgb_rot = rot_slice[:, :, :3].astype(np.float32)
+    roi = img[y1:y2, x1:x2].astype(np.float32)
+
+    blended = (alpha * rgb_rot + (1 - alpha) * roi).astype(np.uint8)
+    img[y1:y2, x1:x2] = blended
     return img
-
 
 # ---------------- Run Process ----------------
 if run_process and uploaded_file:
