@@ -22,7 +22,7 @@ with st.expander("Input Parameters", expanded=True):
     nom_of_objects = st.number_input("Number of Objects", value=1, min_value=1)
     run_process = st.button("Run Measurement")
 
-def centered_visual(img_array, caption=None, width=550):
+def centered_visual(img_array, caption=None, width=650):
     if isinstance(img_array, np.ndarray):
         img_pil = Image.fromarray(cv2.cvtColor(img_array, cv2.COLOR_BGR2RGB))
     else:
@@ -40,7 +40,7 @@ def centered_visual(img_array, caption=None, width=550):
     """
     st.markdown(html, unsafe_allow_html=True)
 
-def centered_plot(fig, caption=None, width=650):
+def centered_plot(fig, caption=None, width=800):
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight", dpi=150)
     buf.seek(0)
@@ -100,29 +100,27 @@ if run_process and uploaded_file:
     else:
         low_bound = 60
 
-    derivative = np.gradient(smoothed_hist[low_bound:])
-    zero_crossings = np.where(np.diff(np.sign(derivative)))[0]
-    minima = np.array([i for i in zero_crossings if (i - 1) >= 0 and (i + 1) < len(derivative) and derivative[i - 1] < 0 and derivative[i + 1] > 0]).astype(int) + low_bound
-    if minima.size == 0:
-        minima = np.array([int(np.argmin(smoothed_hist))])
+    derivative_hist = np.gradient(smoothed_hist[low_bound:])
+    zero_crossings_hist = np.where(np.diff(np.sign(derivative_hist)))[0]
+    minima_hist = np.array([i for i in zero_crossings_hist if (i - 1) >= 0 and (i + 1) < len(derivative_hist) and derivative_hist[i - 1] < 0 and derivative_hist[i + 1] > 0]).astype(int) + low_bound
+    if minima_hist.size == 0:
+        minima_hist = np.array([int(np.argmin(smoothed_hist))])
 
     sigma1 = 3.76
     sigma2 = 1.8
     smoothed_hist1 = gaussian_filter1d(hist, sigma=sigma1)
     smoothed_hist2 = gaussian_filter1d(hist, sigma=sigma2)
     dog = smoothed_hist1 - smoothed_hist2
-    display_dog_red = 3.0 * dog
     smooth_dog = gaussian_filter1d(dog, sigma=1.5)
-    display_smooth_dog = 1.8 * smooth_dog
 
-    derivative_dog = np.gradient(smooth_dog)
-    zc_dog = np.where(np.diff(np.sign(derivative_dog)))[0]
-    maxima_dog = np.array([i for i in zc_dog if derivative_dog[i - 1] > 0 and derivative_dog[i + 1] < 0]).astype(int)
-    minima_dog = np.array([i for i in zc_dog if derivative_dog[i - 1] < 0 and derivative_dog[i + 1] > 0]).astype(int)
-    if minima_dog.size == 0:
-        minima_dog = np.array([int(np.argmin(smooth_dog))])
-    if maxima_dog.size == 0:
-        maxima_dog = np.array([int(np.argmax(smooth_dog))])
+    derivative_dog_full = np.gradient(smooth_dog)
+    zero_crossings_full = np.where(np.diff(np.sign(derivative_dog_full)))[0]
+    maxima_full = np.array([i for i in zero_crossings_full if derivative_dog_full[i - 1] > 0 and derivative_dog_full[i + 1] < 0]).astype(int)
+    minima_full = np.array([i for i in zero_crossings_full if derivative_dog_full[i - 1] < 0 and derivative_dog_full[i + 1] > 0]).astype(int)
+    if minima_full.size == 0:
+        minima_full = np.array([int(np.argmin(smooth_dog))])
+    if maxima_full.size == 0:
+        maxima_full = np.array([int(np.argmax(smooth_dog))])
 
     def run_kmeans_safe(points, k):
         pts = np.array(points).reshape(-1, 1).astype(float)
@@ -135,8 +133,8 @@ if run_process and uploaded_file:
         centers = np.sort(kmeans.cluster_centers_.reshape(-1))
         return centers
 
-    centers_hist = run_kmeans_safe(minima, int(nom_of_objects))
-    centers_dog = run_kmeans_safe(minima_dog, int(nom_of_objects))
+    centers_hist = run_kmeans_safe(minima_hist, int(nom_of_objects))
+    centers_dog = run_kmeans_safe(minima_full, int(nom_of_objects))
     centers = np.sort(((centers_hist + centers_dog) / 2.0).reshape(-1))
 
     def small_area_remover(binary):
@@ -148,7 +146,7 @@ if run_process and uploaded_file:
             output[labels == largest_label] = 255
         return output
 
-    ground_truth = int(minima[0])
+    ground_truth = int(minima_hist[0])
     _, ground = cv2.threshold(gray, ground_truth, 255, cv2.THRESH_BINARY)
     masks = {}
     if nom_of_objects > 1:
@@ -281,10 +279,10 @@ if run_process and uploaded_file:
         centered_plot(fig_hist, "Figure 5. Raw and smoothed histogram showing the depth intensity distribution.")
 
         fig_comb, ax_comb = plt.subplots(figsize=(10, 4.5))
-        ax_comb.plot(display_dog_red, color='red', label=f"3x DoG (σ1=3.76, σ2=1.8)")
-        ax_comb.plot(display_smooth_dog, color='green', label=f"1.8x Smoothed DoG (σ=1.5)")
-        ax_comb.scatter(maxima_dog, display_smooth_dog[maxima_dog], marker='x', color='c', s=60, label='Maxima (DoG)', zorder=5)
-        ax_comb.scatter(minima_dog, display_smooth_dog[minima_dog], marker='x', color='b', s=60, label='Minima (DoG)', zorder=6)
+        ax_comb.plot(3 * dog, color='red', label=f"3x DoG (σ1=3.76, σ2=1.8)")
+        ax_comb.plot(1.8 * smooth_dog, color='green', label=f"1.8x Smoothed DoG (σ=1.5)")
+        ax_comb.scatter(maxima_full, (1.8 * smooth_dog)[maxima_full], marker='x', color='c', s=60, label='Maxima (DoG)', zorder=5)
+        ax_comb.scatter(minima_full, (1.8 * smooth_dog)[minima_full], marker='x', color='b', s=60, label='Minima (DoG)', zorder=6)
         ax_comb.set_title("Scaled DoG with Maxima's and Minima's on means:1.98,3.76")
         ax_comb.set_xlabel("Pixel Intensity")
         ax_comb.set_ylabel("Value")
@@ -292,25 +290,29 @@ if run_process and uploaded_file:
         centered_plot(fig_comb, "Figure 5B. Scaled DoG with maxima and minima (σ₁ = 3.76, σ₂ = 1.8, post-smooth σ = 1.5).")
 
     with st.expander("Difference of Gaussians (DoG) Analysis", expanded=False):
-        fig_dog, ax_dog = plt.subplots(figsize=(6, 3))
-        ax_dog.plot(smooth_dog, color='orange', linewidth=1.5, label="Smoothed DoG (σ=1.5)")
-        ax_dog.axhline(0, color='gray', linestyle='--', linewidth=1)
-        ax_dog.set_title("Smoothed DoG – used for minima extraction")
-        ax_dog.set_xlabel("Pixel Intensity (0–255)")
-        ax_dog.set_ylabel("DoG Value")
-        ax_dog.legend()
-        centered_plot(fig_dog, "Figure 6. Smoothed DoG curve (σ₁=3.76, σ₂=1.8, post-smooth σ=1.5).")
+        fig_dog, ax_dog = plt.subplots(figsize=(10, 8), nrows=3, ncols=1, sharex=True)
+        fig_dog.subplots_adjust(hspace=0.35)
+        axs = ax_dog if isinstance(ax_dog, np.ndarray) else [ax_dog]
 
-        fig_min, ax_min = plt.subplots(figsize=(6, 3))
-        ax_min.plot(smoothed_hist, color='black', linewidth=2)
-        ax_min.scatter(minima, smoothed_hist[minima], color='red', s=40, label="Histogram minima")
-        for i, m in enumerate(minima):
-            ax_min.text(m, smoothed_hist[m] + max(smoothed_hist) * 0.03, f"{i+1}", color='red', ha='center', fontsize=10)
-        ax_min.set_title("Detected Minima on Smoothed Histogram")
-        ax_min.set_xlabel("Pixel Intensity")
-        ax_min.set_ylabel("Smoothed Frequency")
-        ax_min.legend()
-        centered_plot(fig_min, "Figure 6B. Located minima points on smoothed histogram used for segmentation threshold estimation.")
+        axs[0].plot(3 * dog, color='red', linewidth=1.2)
+        axs[0].set_title("Raw Scaled DoG (3×) — σ₁ = 3.76, σ₂ = 1.8", fontsize=12)
+        axs[0].set_ylabel("DoG Value")
+
+        axs[1].plot(1.8 * smooth_dog, color='green', linewidth=1.5)
+        axs[1].set_title("Smoothed Scaled DoG (1.8×, σₛ = 1.5)", fontsize=12)
+        axs[1].set_ylabel("Smoothed Value")
+
+        axs[2].plot(3 * dog, color='red', alpha=0.6, linewidth=1.0, label="3×(G₍3.76₎−G₍1.8₎)")
+        axs[2].plot(1.8 * smooth_dog, color='green', linewidth=1.5, label="1.8×Smoothed DoG (σₛ=1.5)")
+        axs[2].scatter(maxima_full, (1.8 * smooth_dog)[maxima_full], color='cyan', marker='x', s=50, label='Maxima')
+        axs[2].scatter(minima_full, (1.8 * smooth_dog)[minima_full], color='blue', marker='x', s=50, label='Minima')
+        axs[2].axhline(0, color='gray', linestyle='--', linewidth=1)
+        axs[2].set_title("Combined Scaled DoG with Maxima & Minima", fontsize=12)
+        axs[2].set_xlabel("Pixel Intensity (0–255)")
+        axs[2].set_ylabel("Value")
+        axs[2].legend(fontsize=9, loc='upper right')
+
+        centered_plot(fig_dog, "Figure 5B. Scaled DoG with maxima and minima (σ₁ = 3.76, σ₂ = 1.8, post-smooth σ = 1.5).")
 
     with st.expander("KMeans Threshold Fusion (Histogram + DoG)", expanded=False):
         fig_km_hist, ax_km_hist = plt.subplots(figsize=(6, 3))
