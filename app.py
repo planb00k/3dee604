@@ -158,7 +158,7 @@ if run_process and uploaded_file:
                     f=5.42, viewport=[6.144, 8.6], camh=camh)
         cv2.rectangle(temp, tl_p, br_p, (0, 255, 0), 2)
         bounding_boxes.append([tl_p, br_p])
-        results.append({"Object": i+1, "Width (mm)": int(x), "Length (mm)": int(y)})
+        results.append({"Object": i + 1, "Width (mm)": int(x), "Length (mm)": int(y)})
         temp = vertical_text(temp, f"Length {int(y)}mm", tl_p)
         cv2.putText(temp, f"Width {int(x)}mm", (tl_p[0], br_p[1]),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 3)
@@ -189,7 +189,6 @@ if run_process and uploaded_file:
     st.markdown("---")
     st.header("Intermediate Visualizations")
 
-    # 1️⃣ Original & Depth Maps
     with st.expander("Original and Depth Representations"):
         st.image(initial_image, use_column_width=True)
         st.caption("Figure 2. Original RGB image used for depth analysis.")
@@ -198,7 +197,6 @@ if run_process and uploaded_file:
         st.image(depth_color, use_column_width=True)
         st.caption("Figure 4. Colorized depth map using magma colormap for visualizing relative distances.")
 
-    # 2️⃣ Histogram Analysis
     with st.expander("Depth Intensity Histogram"):
         fig_hist, ax_hist = plt.subplots()
         ax_hist.plot(hist, label="Raw Histogram", alpha=0.6, color='gray')
@@ -210,7 +208,6 @@ if run_process and uploaded_file:
         st.pyplot(fig_hist)
         st.caption("Figure 5. Raw and smoothed histogram showing the intensity distribution of the grayscale depth map.")
 
-    # 3️⃣ Derivative (DoG) Analysis
     with st.expander("Derivative (DoG) Analysis"):
         fig_dog, ax_dog = plt.subplots()
         ax_dog.plot(derivative, label="First Derivative (DoG)", color='orange', linewidth=1.5)
@@ -223,12 +220,11 @@ if run_process and uploaded_file:
         st.pyplot(fig_dog)
         st.caption("Figure 6. Derivative of Gaussian showing gradient transitions used for segmentation threshold detection.")
 
-    # 4️⃣ KMeans Clustering Overview
     with st.expander("KMeans Clustering Overview"):
         fig_km, ax_km = plt.subplots()
         ax_km.plot(smoothed_hist, color='black', label="Smoothed Histogram")
         for idx, c in enumerate(centers):
-            ax_km.axvline(x=c, color='blue', linestyle='--', linewidth=1.5, label=f"Cluster Center {idx+1} (Intensity={int(c)})")
+            ax_km.axvline(x=c, color='blue', linestyle='--', linewidth=1.5, label=f"Cluster Center {idx + 1} (Intensity={int(c)})")
         ax_km.set_title("Cluster-Based Threshold Identification")
         ax_km.set_xlabel("Pixel Intensity")
         ax_km.set_ylabel("Smoothed Frequency")
@@ -236,13 +232,12 @@ if run_process and uploaded_file:
         st.pyplot(fig_km)
         st.caption("Figure 7. KMeans clustering applied to histogram minima for automatic segmentation threshold selection.")
 
-    # 5️⃣ Segmentation & Masks
     with st.expander("Segmentation and Object Masks"):
         st.image(ground, use_column_width=True)
         st.caption("Figure 8. Ground threshold mask after initial binary segmentation.")
         for i, mask in masks.items():
             st.image(mask, use_column_width=True)
-            st.caption(f"Figure 9.{i} Object Mask {i+1} after area refinement using connected components.")
+            st.caption(f"Figure 9.{i + 1} Object Mask {i + 1} after area refinement using connected components.")
         st.image(residual, use_column_width=True)
         st.caption("Figure 10. Residual mask showing unassigned or background regions after segmentation.")
 
