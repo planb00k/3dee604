@@ -12,7 +12,22 @@ st.title("3D Object Measurement (Width, Length, Depth)")
 
 # --- Upload image ---
 uploaded_file = st.file_uploader("Upload Image", type=["jpg", "png", "jpeg"])
-if uploaded_file:
+
+# --- Take all inputs in one go ---
+with st.form("input_form"):
+    st.subheader("Enter Input Parameters")
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        relative_height_ratio = st.selectbox("Relative Height Ratio", ["low", "med", "high", "vhigh"])
+    with col2:
+        camh = st.number_input("Camera Height (mm)", value=300)
+    with col3:
+        ref_h = st.number_input("Reference Object Height (mm)", value=50)
+    with col4:
+        nom_of_objects = st.number_input("Number of Objects", value=1, min_value=1)
+    submitted = st.form_submit_button("Run Measurement")
+
+if uploaded_file and submitted:
     image = Image.open(uploaded_file)
     initial_image = np.array(image.convert("RGB"))
     img_rgb = initial_image.copy()
@@ -44,13 +59,7 @@ if uploaded_file:
     depth_color = cv2.cvtColor(depth_color, cv2.COLOR_RGB2BGR)
     st.image(depth_color, caption="Colorized Depth Map", use_column_width=True)
 
-    # --- User Inputs ---
-    relative_height_ratio = st.selectbox("Relative Height Ratio", ["low", "med", "high", "vhigh"])
-    camh = st.number_input("Enter Camera Height (mm)", value=300)
-    ref_h = st.number_input("Enter Reference Object Height (mm)", value=50)
-    nom_of_objects = st.number_input("Number of Objects", value=1, min_value=1)
-
-    # --- Histogram & Object Masking ---
+    # --- Histogram ---
     gray = cv2.cvtColor(depth_color, cv2.COLOR_BGR2GRAY)
     hist = cv2.calcHist([gray], [0], None, [256], [0, 256]).flatten()
     sigma = 1.89
@@ -78,14 +87,14 @@ if uploaded_file:
     zero_crossings = np.where(np.diff(np.sign(derivative)))[0]
     minima = np.array([i for i in zero_crossings if derivative[i-1] < 0 and derivative[i+1] > 0]).astype(int) + low_bound
 
-    # --- DoG visualization ---
+    # --- DoG plot ---
     fig2, ax2 = plt.subplots()
     ax2.plot(derivative, label="DoG (1st Derivative)", color='orange')
     ax2.scatter(minima - low_bound, derivative[minima - low_bound], color='red', label="Detected Minima")
     ax2.legend()
     st.pyplot(fig2)
 
-    # --- KMeans clustering for multiple objects ---
+    # --- KMeans clustering ---
     kmeans = KMeans(n_clusters=nom_of_objects, random_state=42)
     kmeans.fit(minima.reshape(-1,1))
     labels, centers = kmeans.labels_, kmeans.cluster_centers_
@@ -110,7 +119,6 @@ if uploaded_file:
             _, thresh = cv2.threshold(gray, ascending[i], 255, cv2.THRESH_BINARY)
             binary = ground - thresh
             masks[i] = small_area_remover(binary)
-
         sum_mask = np.zeros_like(gray, dtype=np.uint8)
         for i in range(1, nom_of_objects):
             sum_mask = cv2.add(sum_mask, masks[i])
@@ -120,7 +128,6 @@ if uploaded_file:
     else:
         masks[0] = small_area_remover(ground)
 
-    # --- Show individual masks ---
     for i, mask in masks.items():
         st.image(mask, caption=f"Object Mask {i+1}", use_column_width=True)
 
