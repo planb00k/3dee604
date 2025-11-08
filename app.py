@@ -55,7 +55,7 @@ if run_process and uploaded_file:
     depth_color = (plt.cm.magma(depth_norm)[:, :, :3] * 255).astype(np.uint8)
     depth_color = cv2.cvtColor(depth_color, cv2.COLOR_RGB2BGR)
 
-    # ---------------- Histogram & Derivative ----------------
+    # ---------------- Histogram & Derivative (used for segmentation) ----------------
     gray = cv2.cvtColor(depth_color, cv2.COLOR_BGR2GRAY)
     hist = cv2.calcHist([gray], [0], None, [256], [0, 256]).flatten()
     smoothed_hist = gaussian_filter1d(hist, sigma=1.89)
@@ -69,10 +69,14 @@ if run_process and uploaded_file:
     else:
         low_bound = 60
 
+    # --- Original gradient logic (kept for segmentation stability) ---
     derivative = np.gradient(smoothed_hist[low_bound:])
     zero_crossings = np.where(np.diff(np.sign(derivative)))[0]
-    minima = np.array([i for i in zero_crossings if (i - 1) >= 0 and (i + 1) < len(derivative)
-                       and derivative[i - 1] < 0 and derivative[i + 1] > 0]).astype(int) + low_bound
+    minima = np.array([
+        i for i in zero_crossings
+        if (i - 1) >= 0 and (i + 1) < len(derivative) and derivative[i - 1] < 0 and derivative[i + 1] > 0
+    ]).astype(int) + low_bound
+
     if minima.size == 0:
         minima = np.array([np.argmin(smoothed_hist)])
 
@@ -96,7 +100,8 @@ if run_process and uploaded_file:
 
     if nom_of_objects > 1:
         for i in range(1, nom_of_objects):
-            _, thresh = cv2.threshold(gray, int(centers[i]), 255, cv2.THRESH_BINARY)
+            thr_val = int(centers[i])
+            _, thresh = cv2.threshold(gray, thr_val, 255, cv2.THRESH_BINARY)
             binary = cv2.subtract(ground, thresh)
             masks[i] = small_area_remover(binary)
 
@@ -130,6 +135,7 @@ if run_process and uploaded_file:
         y = (camh / f) * ty
         return [cx * x, cy * y]
 
+    # === ORIGINAL vertical_text behavior restored (top-left origin placement) ===
     def vertical_text(img, text, org):
         x, y = org
         font = cv2.FONT_HERSHEY_SIMPLEX
@@ -140,10 +146,15 @@ if run_process and uploaded_file:
         text_img = np.zeros((text_h + baseline, text_w, 3), dtype=np.uint8)
         cv2.putText(text_img, text, (0, text_h), font, scale, (0, 255, 0), thickness)
         M = cv2.getRotationMatrix2D((text_w // 2, text_h // 2), angle, 1.0)
-        rotated = cv2.warpAffine(text_img, M, (text_h + text_w, text_h + text_w), flags=cv2.INTER_LINEAR, borderValue=(0, 0, 0))
+        cos, sin = np.abs(M[0, 0]), np.abs(M[0, 1])
+        nW = int((text_h * sin) + (text_w * cos))
+        nH = int((text_h * cos) + (text_w * sin))
+        M[0, 2] += (nW / 2) - text_w // 2
+        M[1, 2] += (nH / 2) - text_h // 2
+        rotated = cv2.warpAffine(text_img, M, (nW, nH), flags=cv2.INTER_LINEAR, borderValue=(0, 0, 0))
         h, w = rotated.shape[:2]
         if y + h <= img.shape[0] and x + w <= img.shape[1]:
-            img[y:y+h, x:x+w] = np.where(rotated > 0, rotated, img[y:y+h, x:x+w])
+            img[y:y + h, x:x + w] = np.where(rotated > 0, rotated, img[y:y + h, x:x + w])
         return img
 
     def mean_depth(depthmap, lt_p, rb_p):
@@ -161,23 +172,28 @@ if run_process and uploaded_file:
     for i in range(nom_of_objects):
         mask_i = masks.get(i, np.zeros_like(gray))
         dx, dy, tl_p, br_p = sad(mask_i)
+        # ensure ints
+        tl_p = (int(tl_p[0]), int(tl_p[1])); br_p = (int(br_p[0]), int(br_p[1]))
         x_mm, y_mm = view(dx, dy, px=initial_image.shape[0], py=initial_image.shape[1],
                           f=5.42, viewport=[6.144, 8.6], camh=camh)
-        cv2.circle(temp, tl_p, 5, (0,255,0), 2)
-        cv2.circle(temp, br_p, 5, (0,255,0), 2)
-        cv2.rectangle(temp, tl_p, br_p, (0,255,0), 2)
+        cv2.circle(temp, tl_p, 5, (0, 255, 0), 2)
+        cv2.circle(temp, br_p, 5, (0, 255, 0), 2)
+        cv2.rectangle(temp, tl_p, br_p, (0, 255, 0), 2)
         bounding_boxes.append([tl_p, br_p])
         results.append({"Object": i + 1, "Width (mm)": int(x_mm), "Length (mm)": int(y_mm)})
-        cv2.putText(temp, f"Width {int(x_mm)}mm", (tl_p[0], br_p[1]), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 3)
+        # width text (below)
+        cv2.putText(temp, f"Width {int(x_mm)}mm", (tl_p[0], br_p[1] + 4), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 3)
+        # vertical length text — ORIGINAL placement (start at top-left tl_p)
         temp = vertical_text(temp, f"Length {int(y_mm)}mm", tl_p)
 
-    ref = mean_depth(depth_color, (0,0), bounding_boxes[0][0])
+    # compute depth values
+    ref = mean_depth(depth_color, (0, 0), bounding_boxes[0][0])
     mean_val = []
     min1 = 255
     for i in range(nom_of_objects):
-        _01img = (masks[i]//255) if (i in masks) else np.zeros_like(gray)
-        if np.any(_01img==1):
-            meanint = float(depth_color[_01img==1].mean())
+        _01img = (masks[i] // 255) if (i in masks) else np.zeros_like(gray)
+        if np.any(_01img == 1):
+            meanint = float(depth_color[_01img == 1].mean())
         else:
             meanint = float(depth_color.mean())
         if ref < meanint < min1:
@@ -187,7 +203,7 @@ if run_process and uploaded_file:
 
     for i in range(nom_of_objects):
         temph = (float(mean_val[i] - ref) / scaler) * ref_h
-        cv2.putText(temp, f"Depth {int(temph)}mm", bounding_boxes[i][0], cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,0), 3)
+        cv2.putText(temp, f"Depth {int(temph)}mm", bounding_boxes[i][0], cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 3)
         results[i]["Depth (mm)"] = int(temph)
 
     # ---------------- Helper visual functions ----------------
@@ -232,7 +248,7 @@ if run_process and uploaded_file:
     # Bounding boxes before annotation
     bbox_only = depth_color.copy()
     for i, (tl, br) in enumerate(bounding_boxes):
-        cv2.rectangle(bbox_only, tl, br, (0,255,0), 2)
+        cv2.rectangle(bbox_only, tl, br, (0, 255, 0), 2)
         cv2.putText(bbox_only, f"Obj {i+1}", (tl[0], br[1]-10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0,255,0), 2)
     centered_visual(bbox_only, "Figure 1B. Detected object bounding boxes before dimension annotation.")
 
@@ -259,7 +275,7 @@ if run_process and uploaded_file:
         ax_hist.legend()
         centered_plot(fig_hist, "Figure 5. Raw and smoothed histogram showing the depth intensity distribution.")
 
-        # ✅ DoG computed from smoothed histogram (not raw)
+        # ✅ DoG computed from smoothed histogram (matches notebook)
         g1 = gaussian_filter1d(smoothed_hist, sigma=1.0)
         g2 = gaussian_filter1d(smoothed_hist, sigma=3.0)
         display_dog = g1 - g2
@@ -302,4 +318,18 @@ if run_process and uploaded_file:
         for idx, c in enumerate(centers):
             color = colors[idx % len(colors)]
             ax_km.axvline(x=c, color=color, linestyle='--', linewidth=1.5, label=f"Cluster Center {idx + 1} (Intensity={int(c)})")
-            ax_km
+            ax_km.text(int(c) + 3, max(smoothed_hist) * 0.05, f"C{idx+1}", color=color, fontsize=10)
+        ax_km.set_title("Cluster-Based Threshold Identification with Labeled Centers")
+        ax_km.set_xlabel("Pixel Intensity")
+        ax_km.set_ylabel("Smoothed Frequency")
+        ax_km.legend(fontsize=9)
+        centered_plot(fig_km, "Figure 7. KMeans clustering applied to histogram minima for segmentation threshold selection.")
+
+    with st.expander("Segmentation and Object Masks", expanded=False):
+        centered_visual(ground, "Figure 8. Ground threshold mask after initial binary segmentation.")
+        for key, mask in sorted(masks.items(), key=lambda x: x[0]):
+            centered_visual(mask, f"Figure 9.{key + 1} Object Mask {key + 1} after area refinement using connected components.")
+        centered_visual(residual, "Figure 10. Residual mask showing unassigned or background regions after segmentation.")
+
+elif run_process and not uploaded_file:
+    st.warning("Please upload an image before running the measurement.")
