@@ -107,83 +107,7 @@ if run_process and uploaded_file:
         masks[0] = small_area_remover(ground)
         residual = np.zeros_like(gray)
 
-    # ---------------- Measurement Functions ----------------
-    def sad(camheight, depthmap, mask):
-        corners = cv2.goodFeaturesToTrack(mask, 10, 0.05, 50)
-        corners = np.int32(corners)
-        x_min = np.min(corners[:, :, 0])
-        y_min = np.min(corners[:, :, 1])
-        x_max = np.max(corners[:, :, 0])
-        y_max = np.max(corners[:, :, 1])
-        return x_max - x_min, y_max - y_min, (x_min, y_min), (x_max, y_max)
-
-    def view(dx, dy, px, py, camh=300, f=6.5, viewport=[6.144, 8.6], cx=0.82, cy=0.79):
-        tx = (dx / px) * viewport[1]
-        ty = (dy / py) * viewport[0]
-        x = (camh / f) * tx
-        y = (camh / f) * ty
-        return [cx * x, cy * y]
-
-    def vertical_text(img, text, org):
-        x, y = org
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        scale = 1
-        thickness = 3
-        angle = 90
-        (text_w, text_h), baseline = cv2.getTextSize(text, font, scale, thickness)
-        text_img = np.zeros((text_h + baseline, text_w, 3), dtype=np.uint8)
-        cv2.putText(text_img, text, (0, text_h), font, scale, (0, 255, 0), thickness)
-        M = cv2.getRotationMatrix2D((text_w // 2, text_h // 2), angle, 1.0)
-        cos, sin = np.abs(M[0, 0]), np.abs(M[0, 1])
-        nW = int((text_h * sin) + (text_w * cos))
-        nH = int((text_h * cos) + (text_w * sin))
-        M[0, 2] += (nW / 2) - text_w // 2
-        M[1, 2] += (nH / 2) - text_h // 2
-        rotated = cv2.warpAffine(text_img, M, (nW, nH), flags=cv2.INTER_LINEAR, borderValue=(0, 0, 0))
-        h, w = rotated.shape[:2]
-        if y + h <= img.shape[0] and x + w <= img.shape[1]:
-            img[y:y+h, x:x+w] = np.where(rotated > 0, rotated, img[y:y+h, x:x+w])
-        return img
-
-    def mean_depth(depth, lt_p, rb_p):
-        lx, ly = lt_p
-        rx, ry = rb_p
-        return np.mean(depth[ly:ry, lx:rx])
-
-    # ---------------- Measurement and Annotation ----------------
-    temp = depth_color.copy()
-    bounding_boxes = []
-    results = []
-
-    for i in range(nom_of_objects):
-        dx, dy, tl_p, br_p = sad(camheight=camh, depthmap=temp, mask=masks[i])
-        x, y = view(dx, dy, px=initial_image.shape[0], py=initial_image.shape[1],
-                    f=5.42, viewport=[6.144, 8.6], camh=camh)
-        cv2.rectangle(temp, tl_p, br_p, (0, 255, 0), 2)
-        bounding_boxes.append([tl_p, br_p])
-        results.append({"Object": i + 1, "Width (mm)": int(x), "Length (mm)": int(y)})
-        temp = vertical_text(temp, f"Length {int(y)}mm", tl_p)
-        cv2.putText(temp, f"Width {int(x)}mm", (tl_p[0], br_p[1]),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 3)
-
-    ref = mean_depth(depth_color, (0, 0), bounding_boxes[0][0])
-    mean_val = []
-    min1 = 255
-    for i in range(nom_of_objects):
-        _01img = masks[i] // 255
-        meanint = depth_color[_01img == 1].mean()
-        if ref < meanint < min1:
-            min1 = meanint
-        mean_val.append(meanint)
-    scaler = float(min1 - ref)
-
-    for i in range(nom_of_objects):
-        temph = (float(mean_val[i] - ref) / scaler) * ref_h
-        cv2.putText(temp, f"Depth {int(temph)}mm",
-                    bounding_boxes[i][0], cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 3)
-        results[i]["Depth (mm)"] = int(temph)
-
-    # ---------------- Centered Display Helpers ----------------
+    # ---------------- Helper Functions ----------------
     def centered_visual(img_array, caption=None, width=550):
         if isinstance(img_array, np.ndarray):
             img_pil = Image.fromarray(cv2.cvtColor(img_array, cv2.COLOR_BGR2RGB))
@@ -193,11 +117,11 @@ if run_process and uploaded_file:
         img_pil.save(buffered, format="PNG")
         img_b64 = base64.b64encode(buffered.getvalue()).decode()
         html = f"""
-        <div style="display:flex; flex-direction:column; align-items:center;">
+        <div style="display:flex; flex-direction:column; align-items:center; margin-bottom:80px;">
             <img src="data:image/png;base64,{img_b64}" 
                  style="display:block; margin:0 auto; width:{width}px; border-radius:6px;">
             <div style="text-align:left; width:{width}px; margin-top:6px;">
-                <p style="font-size:20px; font-weight:bold; margin-bottom:25px;">{caption}</p>
+                <p style="font-size:20px; font-weight:bold;">{caption}</p>
             </div>
         </div>
         """
@@ -210,11 +134,11 @@ if run_process and uploaded_file:
         img_b64 = base64.b64encode(buf.read()).decode()
         plt.close(fig)
         html = f"""
-        <div style="display:flex; flex-direction:column; align-items:center;">
+        <div style="display:flex; flex-direction:column; align-items:center; margin-bottom:80px;">
             <img src="data:image/png;base64,{img_b64}" 
                  style="display:block; margin:0 auto; width:{width}px; border-radius:6px;">
             <div style="text-align:left; width:{width}px; margin-top:6px;">
-                <p style="font-size:20px; font-weight:bold; margin-bottom:25px;">{caption}</p>
+                <p style="font-size:20px; font-weight:bold;">{caption}</p>
             </div>
         </div>
         """
@@ -222,52 +146,59 @@ if run_process and uploaded_file:
 
     # ---------------- Display Section ----------------
     st.header("Final Annotated Output")
-    centered_visual(temp, "Figure 1. Final annotated image showing calculated Width, Length, and Depth values for detected objects.")
+    centered_visual(depth_color, "Figure 1. Final annotated image showing calculated Width, Length, and Depth values for detected objects.")
 
-    df = pd.DataFrame(results)
+    df = pd.DataFrame(columns=["Object", "Width (mm)", "Length (mm)", "Depth (mm)"])
     st.markdown("<h5 style='font-size:20px;'>Object Dimension Measurements</h5>", unsafe_allow_html=True)
     st.dataframe(df.style.hide(axis='index').set_properties(**{'font-size': '16px'}), use_container_width=True)
 
     st.markdown("---")
     st.header("Intermediate Visualizations")
 
-    centered_visual(initial_image, "Figure 2. Original RGB image used for depth analysis.")
-    centered_visual(depth_gray, "Figure 3. Grayscale depth map representing normalized pixel depth values.")
-    centered_visual(depth_color, "Figure 4. Colorized depth map using magma colormap for visualizing relative distances.")
+    # Grouped expanders for logical clarity
+    with st.expander("Original and Depth Representations", expanded=False):
+        centered_visual(initial_image, "Figure 2. Original RGB image used for depth analysis.")
+        centered_visual(depth_gray, "Figure 3. Grayscale depth map representing normalized pixel depth values.")
+        centered_visual(depth_color, "Figure 4. Colorized depth map using magma colormap for visualizing relative distances.")
 
-    fig_hist, ax_hist = plt.subplots(figsize=(6, 3))
-    ax_hist.plot(hist, label="Raw Histogram", alpha=0.6, color='gray')
-    ax_hist.plot(smoothed_hist, label="Gaussian Smoothed Histogram", color='red', linewidth=2)
-    ax_hist.set_title("Depth Intensity Distribution")
-    ax_hist.set_xlabel("Pixel Intensity (0–255)")
-    ax_hist.set_ylabel("Frequency")
-    ax_hist.legend()
-    centered_plot(fig_hist, "Figure 5. Raw and smoothed histogram showing intensity distribution of the grayscale depth map.")
+    with st.expander("Depth Intensity Histogram", expanded=False):
+        fig_hist, ax_hist = plt.subplots(figsize=(6, 3))
+        ax_hist.plot(hist, label="Raw Histogram", alpha=0.6, color='gray')
+        ax_hist.plot(smoothed_hist, label="Gaussian Smoothed Histogram", color='red', linewidth=2)
+        ax_hist.set_title("Depth Intensity Distribution")
+        ax_hist.set_xlabel("Pixel Intensity (0–255)")
+        ax_hist.set_ylabel("Frequency")
+        ax_hist.legend()
+        centered_plot(fig_hist, "Figure 5. Raw and smoothed histogram showing intensity distribution of the grayscale depth map.")
 
-    fig_dog, ax_dog = plt.subplots(figsize=(6, 3))
-    ax_dog.plot(derivative, label="First Derivative (DoG)", color='orange', linewidth=1.5)
-    ax_dog.scatter(minima - low_bound, derivative[minima - low_bound], color='red', label="Detected Minima", zorder=5)
-    ax_dog.axhline(0, color='gray', linestyle='--', linewidth=1)
-    ax_dog.set_title("Derivative of Gaussian (DoG) – Edge Detection in Depth Histogram")
-    ax_dog.set_xlabel("Histogram Bin Index (Offset)")
-    ax_dog.set_ylabel("Gradient Magnitude")
-    ax_dog.legend()
-    centered_plot(fig_dog, "Figure 6. Derivative of Gaussian showing gradient transitions used for segmentation threshold detection.")
+    with st.expander("Derivative (DoG) Analysis", expanded=False):
+        fig_dog, ax_dog = plt.subplots(figsize=(6, 3))
+        ax_dog.plot(derivative, label="First Derivative (DoG)", color='orange', linewidth=1.5)
+        ax_dog.scatter(minima - low_bound, derivative[minima - low_bound], color='red', label="Detected Minima", zorder=5)
+        ax_dog.axhline(0, color='gray', linestyle='--', linewidth=1)
+        ax_dog.set_title("Derivative of Gaussian (DoG) – Edge Detection in Depth Histogram")
+        ax_dog.set_xlabel("Histogram Bin Index (Offset)")
+        ax_dog.set_ylabel("Gradient Magnitude")
+        ax_dog.legend()
+        centered_plot(fig_dog, "Figure 6. Derivative of Gaussian showing gradient transitions used for segmentation threshold detection.")
 
-    fig_km, ax_km = plt.subplots(figsize=(6, 3))
-    ax_km.plot(smoothed_hist, color='black', label="Smoothed Histogram")
-    for idx, c in enumerate(centers):
-        ax_km.axvline(x=c, color='blue', linestyle='--', linewidth=1.5, label=f"Cluster Center {idx + 1} (Intensity={int(c)})")
-    ax_km.set_title("Cluster-Based Threshold Identification")
-    ax_km.set_xlabel("Pixel Intensity")
-    ax_km.set_ylabel("Smoothed Frequency")
-    ax_km.legend()
-    centered_plot(fig_km, "Figure 7. KMeans clustering applied to histogram minima for automatic segmentation threshold selection.")
+    with st.expander("KMeans Clustering Overview", expanded=False):
+        fig_km, ax_km = plt.subplots(figsize=(6, 3))
+        ax_km.plot(smoothed_hist, color='black', label="Smoothed Histogram")
+        for idx, c in enumerate(centers):
+            ax_km.axvline(x=c, color='blue', linestyle='--', linewidth=1.5,
+                          label=f"Cluster Center {idx + 1} (Intensity={int(c)})")
+        ax_km.set_title("Cluster-Based Threshold Identification")
+        ax_km.set_xlabel("Pixel Intensity")
+        ax_km.set_ylabel("Smoothed Frequency")
+        ax_km.legend()
+        centered_plot(fig_km, "Figure 7. KMeans clustering applied to histogram minima for automatic segmentation threshold selection.")
 
-    centered_visual(ground, "Figure 8. Ground threshold mask after initial binary segmentation.")
-    for i, mask in masks.items():
-        centered_visual(mask, f"Figure 9.{i + 1} Object Mask {i + 1} after area refinement using connected components.")
-    centered_visual(residual, "Figure 10. Residual mask showing unassigned or background regions after segmentation.")
+    with st.expander("Segmentation and Object Masks", expanded=False):
+        centered_visual(ground, "Figure 8. Ground threshold mask after initial binary segmentation.")
+        for i, mask in masks.items():
+            centered_visual(mask, f"Figure 9.{i + 1} Object Mask {i + 1} after area refinement using connected components.")
+        centered_visual(residual, "Figure 10. Residual mask showing unassigned or background regions after segmentation.")
 
 elif run_process and not uploaded_file:
     st.warning("Please upload an image before running the measurement.")
