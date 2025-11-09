@@ -236,11 +236,11 @@ if run_process and uploaded_file:
         cv2.rectangle(temp, tl, br, (0, 255, 0), 2)
         bboxes.append([tl, br])
 
-        # --- Centered vertical label inside the box ---
-        center_x = (tl[0] + br[0]) // 2
-        center_y = (tl[1] + br[1]) // 2
-        label_x = max(tl[0] + 8, 0)
-        label_y = max(center_y - 40, 20)
+        # --- Perfectly placed vertical Length label (inside, centered) ---
+        box_height = br[1] - tl[1]
+        box_width = br[0] - tl[0]
+        label_x = tl[0] + int(box_width * 0.07)
+        label_y = tl[1] + int(box_height / 2) - 40
 
         temp = vertical_text(
             temp,
