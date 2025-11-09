@@ -93,15 +93,17 @@ def load_depth_model():
     model = AutoModelForDepthEstimation.from_pretrained(model_id)
     return processor, model
 
-# --- Fixed vertical text ---
+# --- Final fixed vertical text (no clipping) ---
 def vertical_text(img, text, org, color=(255, 255, 0), angle=90):
     font = cv2.FONT_HERSHEY_SIMPLEX
     scale, thick = 0.9, 2
     (tw, th), _ = cv2.getTextSize(text, font, scale, thick)
-    canvas = np.zeros((tw + 80, th * 4, 4), dtype=np.uint8)
-    cv2.putText(canvas, text, (20, tw // 2 + th // 2), font, scale, (*color, 255), thick, cv2.LINE_AA)
-    M = cv2.getRotationMatrix2D((canvas.shape[1] // 2, canvas.shape[0] // 2), angle, 1.0)
-    rot = cv2.warpAffine(canvas, M, (canvas.shape[1], canvas.shape[0]), flags=cv2.INTER_LINEAR, borderValue=(0, 0, 0, 0))
+    canvas_h = tw + 40
+    canvas_w = th * 3
+    canvas = np.zeros((canvas_h, canvas_w, 4), dtype=np.uint8)
+    cv2.putText(canvas, text, (10, tw // 2 + th // 2), font, scale, (*color, 255), thick, cv2.LINE_AA)
+    M = cv2.getRotationMatrix2D((canvas_w // 2, canvas_h // 2), angle, 1.0)
+    rot = cv2.warpAffine(canvas, M, (canvas_w, canvas_h), flags=cv2.INTER_LINEAR, borderValue=(0, 0, 0, 0))
     x, y = org
     h, w = rot.shape[:2]
     y1, y2 = max(0, y), min(y + h, img.shape[0])
@@ -198,21 +200,20 @@ if run_process and uploaded_file:
         cv2.rectangle(temp, tl, br, (0, 255, 0), 2)
         bboxes.append([tl, br])
 
-        # --- Length label much more left (0.1 fraction) ---
+        # --- Length label properly left and visible ---
         box_width = br[0] - tl[0]
         box_height = br[1] - tl[1]
         label_x = tl[0] + int(box_width * 0.1)
         label_y = tl[1] + int(box_height * 0.45)
         temp = vertical_text(temp, f"Length {int(y)} mm", (label_x, label_y), color=(255, 255, 0), angle=90)
 
-        # Width label bottom edge
+        # Width
         cv2.putText(temp, f"Width {int(x)} mm", (tl[0] + 10, br[1] - 15),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 3)
         results.append({"Object": i + 1, "Width (mm)": int(x), "Length (mm)": int(y)})
 
-    # --- Depth labels drawn last ---
-    for i in range(n_clusters):
-        tl, br = bboxes[i]
+    # Draw Depth last (on top)
+    for i, (tl, br) in enumerate(bboxes):
         cv2.putText(temp, f"Depth {ref_h} mm", (br[0] - 140, tl[1] + 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 3)
 
@@ -221,11 +222,6 @@ if run_process and uploaded_file:
 
     df = pd.DataFrame(results)
     st.dataframe(df.style.hide(axis='index').set_properties(**{'font-size': '16px'}), use_container_width=True)
-
-    with st.expander("Intermediate Visualizations", expanded=False):
-        centered_visual(initial_image, "Original Image")
-        centered_visual(depth_gray, "Depth (Grayscale)")
-        centered_visual(depth_color, "Depth (Colorized)")
 
 elif run_process and not uploaded_file:
     st.warning("Please upload an image before running the measurement.")
