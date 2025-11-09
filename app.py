@@ -93,34 +93,25 @@ def load_depth_model():
     model = AutoModelForDepthEstimation.from_pretrained(model_id)
     return processor, model
 
+# --- Fixed vertical text ---
 def vertical_text(img, text, org, color=(255, 255, 0), angle=90):
     font = cv2.FONT_HERSHEY_SIMPLEX
-    scale, thick = 1, 3
+    scale, thick = 0.9, 2
     (tw, th), _ = cv2.getTextSize(text, font, scale, thick)
-    pad = 150
-    canvas_h, canvas_w = tw + pad * 2, th + pad * 4
-    canvas = np.zeros((canvas_h, canvas_w, 4), dtype=np.uint8)
-    org_x = pad
-    org_y = (canvas_h + th) // 2
-    cv2.putText(canvas, text, (org_x, org_y), font, scale, (*color, 255), thick, cv2.LINE_AA)
-    M = cv2.getRotationMatrix2D((canvas_w // 2, canvas_h // 2), angle, 1.0)
-    rot = cv2.warpAffine(canvas, M, (canvas_w * 2, canvas_h * 2), flags=cv2.INTER_LINEAR, borderValue=(0, 0, 0, 0))
+    canvas = np.zeros((tw + 80, th * 4, 4), dtype=np.uint8)
+    cv2.putText(canvas, text, (20, tw // 2 + th // 2), font, scale, (*color, 255), thick, cv2.LINE_AA)
+    M = cv2.getRotationMatrix2D((canvas.shape[1] // 2, canvas.shape[0] // 2), angle, 1.0)
+    rot = cv2.warpAffine(canvas, M, (canvas.shape[1], canvas.shape[0]), flags=cv2.INTER_LINEAR, borderValue=(0, 0, 0, 0))
     x, y = org
     h, w = rot.shape[:2]
-    x1, y1 = max(0, x), max(0, y)
-    x2, y2 = min(x + w, img.shape[1]), min(y + h, img.shape[0])
-    if x1 >= x2 or y1 >= y2:
+    y1, y2 = max(0, y), min(y + h, img.shape[0])
+    x1, x2 = max(0, x), min(x + w, img.shape[1])
+    if y1 >= y2 or x1 >= x2:
         return img
-    rot_x1 = max(0, -x)
-    rot_y1 = max(0, -y)
-    rot_x2 = rot_x1 + (x2 - x1)
-    rot_y2 = rot_y1 + (y2 - y1)
-    rot_slice = rot[rot_y1:rot_y2, rot_x1:rot_x2]
-    alpha = rot_slice[:, :, 3:] / 255.0
-    rgb_rot = rot_slice[:, :, :3].astype(np.float32)
-    roi = img[y1:y2, x1:x2].astype(np.float32)
-    blended = (alpha * rgb_rot + (1 - alpha) * roi).astype(np.uint8)
-    img[y1:y2, x1:x2] = blended
+    roi = img[y1:y2, x1:x2]
+    rot_crop = rot[0:y2 - y1, 0:x2 - x1]
+    alpha = rot_crop[:, :, 3:] / 255.0
+    img[y1:y2, x1:x2] = (alpha * rot_crop[:, :, :3] + (1 - alpha) * roi).astype(np.uint8)
     return img
 
 # ---------------- Run Process ----------------
@@ -129,7 +120,6 @@ if run_process and uploaded_file:
 
     image = Image.open(uploaded_file)
     initial_image = np.array(image.convert("RGB"))
-
     processor, model = load_depth_model()
     inputs = processor(images=image, return_tensors="pt")
     with torch.no_grad():
@@ -141,15 +131,14 @@ if run_process and uploaded_file:
     depth_gray = (depth_norm * 255).astype(np.uint8)
     depth_color = (plt.cm.magma(depth_norm)[:, :, :3] * 255).astype(np.uint8)
     depth_color = cv2.cvtColor(depth_color, cv2.COLOR_RGB2BGR)
-
     gray = cv2.cvtColor(depth_color, cv2.COLOR_BGR2GRAY)
+
     hist = cv2.calcHist([gray], [0], None, [256], [0, 256]).flatten()
     smoothed_hist = gaussian_filter1d(hist, sigma=1.89)
     smoothed_hist1 = gaussian_filter1d(hist, sigma=3.76)
     smoothed_hist2 = gaussian_filter1d(hist, sigma=1.8)
     dog = smoothed_hist1 - smoothed_hist2
     smooth_dog = 1.8 * gaussian_filter1d(dog, sigma=1.5)
-
     low_bound = {"low": 110, "med": 100, "high": 80, "vhigh": 60}[relative_height_ratio]
     upper_bound = 255
 
@@ -164,7 +153,8 @@ if run_process and uploaded_file:
     centers_dog = safe_kmeans_centers(minima_dog, n_clusters, low=low_bound, high=upper_bound)
     centers_mid = np.sort((np.array(centers_hist) + np.array(centers_dog)) / 2.0).astype(int)
 
-    masks, ground_threshold = {}, int(centers_mid[0]) if len(centers_mid) > 0 else low_bound
+    masks = {}
+    ground_threshold = int(centers_mid[0]) if len(centers_mid) > 0 else low_bound
     _, ground = cv2.threshold(gray, ground_threshold, 255, cv2.THRESH_BINARY)
 
     if n_clusters > 1:
@@ -208,53 +198,34 @@ if run_process and uploaded_file:
         cv2.rectangle(temp, tl, br, (0, 255, 0), 2)
         bboxes.append([tl, br])
 
-        # --- Length label shifted left (0.25) ---
+        # --- Length label much more left (0.1 fraction) ---
         box_width = br[0] - tl[0]
         box_height = br[1] - tl[1]
-        label_x = tl[0] + int(box_width * 0.25)
-        label_y = tl[1] + int(box_height * 0.5) - 20
-        label_x = max(label_x, tl[0] + 8)
-        label_x = min(label_x, br[0] - 40)
-        label_y = max(label_y, tl[1] + 20)
-        label_y = min(label_y, br[1] - 60)
+        label_x = tl[0] + int(box_width * 0.1)
+        label_y = tl[1] + int(box_height * 0.45)
         temp = vertical_text(temp, f"Length {int(y)} mm", (label_x, label_y), color=(255, 255, 0), angle=90)
 
+        # Width label bottom edge
         cv2.putText(temp, f"Width {int(x)} mm", (tl[0] + 10, br[1] - 15),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 3)
         results.append({"Object": i + 1, "Width (mm)": int(x), "Length (mm)": int(y)})
 
+    # --- Depth labels drawn last ---
+    for i in range(n_clusters):
+        tl, br = bboxes[i]
+        cv2.putText(temp, f"Depth {ref_h} mm", (br[0] - 140, tl[1] + 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 3)
+
     st.header("Final Annotated Output")
     centered_visual(temp, "Figure 1. Annotated Output")
-
-    bbox_only = depth_color.copy()
-    for i, (tl, br) in enumerate(bboxes):
-        cv2.rectangle(bbox_only, tl, br, (0, 255, 0), 2)
-        cv2.putText(bbox_only, f"Obj {i+1}", (tl[0], br[1]-10), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
-    centered_visual(bbox_only, "Bounding Boxes")
 
     df = pd.DataFrame(results)
     st.dataframe(df.style.hide(axis='index').set_properties(**{'font-size': '16px'}), use_container_width=True)
 
     with st.expander("Intermediate Visualizations", expanded=False):
-        centered_visual(initial_image, "Original RGB Image")
-        centered_visual(depth_gray, "Depth Map (Grayscale)")
-        centered_visual(depth_color, "Depth Map (Colorized)")
-
-        fig, ax = plt.subplots(figsize=(8,3))
-        ax.plot(hist, label="Histogram", alpha=0.6)
-        ax.plot(smoothed_hist, label="Smoothed", color='r', linewidth=2)
-        ax.legend()
-        centered_plot(fig, "Histogram & Smoothing")
-
-        fig, ax = plt.subplots(figsize=(8,3))
-        ax.plot(smooth_dog, color='green', label='DoG')
-        ax.legend()
-        centered_plot(fig, "Difference of Gaussian")
-
-        centered_visual(ground, "Ground Threshold Mask")
-        for key, mask in sorted(masks.items(), key=lambda x: x[0]):
-            centered_visual(mask, f"Object {key+1} Mask")
-        centered_visual(residual, "Residual Mask")
+        centered_visual(initial_image, "Original Image")
+        centered_visual(depth_gray, "Depth (Grayscale)")
+        centered_visual(depth_color, "Depth (Colorized)")
 
 elif run_process and not uploaded_file:
     st.warning("Please upload an image before running the measurement.")
