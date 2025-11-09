@@ -93,36 +93,30 @@ def load_depth_model():
     model = AutoModelForDepthEstimation.from_pretrained(model_id)
     return processor, model
 
-# -------- Improved vertical text ----------
+# -------- Vertical text (safe, non-clipping) ----------
 def vertical_text(img, text, org, color=(255, 255, 0), angle=90):
-    """Draw vertical text safely inside box."""
     font = cv2.FONT_HERSHEY_SIMPLEX
     scale, thick = 1, 3
     (tw, th), _ = cv2.getTextSize(text, font, scale, thick)
-
     pad = 150
     canvas_h, canvas_w = tw + pad * 2, th + pad * 4
     canvas = np.zeros((canvas_h, canvas_w, 4), dtype=np.uint8)
-
     org_x = pad
     org_y = (canvas_h + th) // 2
     cv2.putText(canvas, text, (org_x, org_y), font, scale, (*color, 255), thick, cv2.LINE_AA)
-
     M = cv2.getRotationMatrix2D((canvas_w // 2, canvas_h // 2), angle, 1.0)
-    rot = cv2.warpAffine(canvas, M, (canvas_w * 2, canvas_h * 2), flags=cv2.INTER_LINEAR, borderValue=(0, 0, 0, 0))
-
+    rot = cv2.warpAffine(canvas, M, (canvas_w * 2, canvas_h * 2),
+                         flags=cv2.INTER_LINEAR, borderValue=(0, 0, 0, 0))
     x, y = org
     h, w = rot.shape[:2]
     x1, y1 = max(0, x), max(0, y)
     x2, y2 = min(x + w, img.shape[1]), min(y + h, img.shape[0])
     if x1 >= x2 or y1 >= y2:
         return img
-
     rot_x1 = max(0, -x)
     rot_y1 = max(0, -y)
     rot_x2 = rot_x1 + (x2 - x1)
     rot_y2 = rot_y1 + (y2 - y1)
-
     rot_slice = rot[rot_y1:rot_y2, rot_x1:rot_x2]
     alpha = rot_slice[:, :, 3:] / 255.0
     rgb_rot = rot_slice[:, :, :3].astype(np.float32)
@@ -172,12 +166,10 @@ if run_process and uploaded_file:
     mh_window = smoothed_hist[low_bound:upper_bound]
     minima_hist_rel = find_local_minima(mh_window)
     minima_hist = (minima_hist_rel + low_bound).astype(int) if minima_hist_rel.size > 0 else np.array([], dtype=int)
-
     grad = np.gradient(smooth_dog)
     zero_crossings = np.where(np.diff(np.sign(grad)))[0]
     minima_dog = np.array([i for i in zero_crossings if grad[i - 1] < 0 and grad[i + 1] > 0], dtype=int)
     minima_dog = minima_dog[(minima_dog >= low_bound) & (minima_dog < upper_bound)]
-
     n_clusters = int(max(1, nom_of_objects))
     centers_hist = safe_kmeans_centers(minima_hist, n_clusters, low=low_bound, high=upper_bound)
     centers_dog = safe_kmeans_centers(minima_dog, n_clusters, low=low_bound, high=upper_bound)
@@ -186,7 +178,6 @@ if run_process and uploaded_file:
     masks = {}
     ground_threshold = int(centers_mid[0]) if len(centers_mid) > 0 else low_bound
     _, ground = cv2.threshold(gray, ground_threshold, 255, cv2.THRESH_BINARY)
-
     if n_clusters > 1:
         for i in range(1, n_clusters):
             thr_val = int(centers_mid[i]) if i < len(centers_mid) else int(centers_mid[-1])
@@ -237,17 +228,16 @@ if run_process and uploaded_file:
         cv2.rectangle(temp, tl, br, (0, 255, 0), 2)
         bboxes.append([tl, br])
 
-        # --- Perfect Length label inside box ---
-        label_x = tl[0] + int((br[0] - tl[0]) * 0.4)
-        label_y = tl[1] + int((br[1] - tl[1]) * 0.3)
-
-        temp = vertical_text(
-            temp,
-            f"Length {int(y)} mm",
-            (label_x, label_y),
-            color=(255, 255, 0),
-            angle=90
-        )
+        # --- Centered and clamped Length label (55% horiz, clamped) ---
+        box_width = br[0] - tl[0]
+        box_height = br[1] - tl[1]
+        label_x = tl[0] + int(box_width * 0.55)
+        label_y = tl[1] + int(box_height * 0.3)
+        label_x = max(label_x, tl[0] + 8)
+        label_x = min(label_x, br[0] - 40)
+        label_y = max(label_y, tl[1] + 20)
+        label_y = min(label_y, br[1] - 60)
+        temp = vertical_text(temp, f"Length {int(y)} mm", (label_x, label_y), color=(255, 255, 0), angle=90)
 
         cv2.putText(temp, f"Width {int(x)} mm", (tl[0] + 10, br[1] - 15),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 3)
@@ -262,13 +252,13 @@ if run_process and uploaded_file:
             min1 = meanint
         mean_val.append(meanint)
     scaler = float(min1 - ref) if (min1 - ref) != 0 else 1.0
-
     for i in range(n_clusters):
         temph = (float(mean_val[i] - ref) / scaler) * ref_h
         cv2.putText(temp, f"Depth {int(temph)} mm", bboxes[i][0],
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 3)
         results[i]["Depth (mm)"] = int(temph)
 
+    # ---- Display ----
     st.header("Final Annotated Output")
     centered_visual(temp, "Figure 1. Final annotated image showing Width, Length, and Depth values.")
 
@@ -290,18 +280,18 @@ if run_process and uploaded_file:
         centered_visual(depth_color, "Figure 4. Colorized depth map (magma colormap).")
 
     with st.expander("Depth Intensity Histogram & Smoothed", expanded=False):
-        fig, ax = plt.subplots(figsize=(8, 3))
+        fig, ax = plt.subplots(figsize=(8,3))
         ax.plot(hist, label="Raw Histogram", alpha=0.6)
         ax.plot(smoothed_hist, label="Gaussian Smoothed (σ=1.89)", color='red', linewidth=2)
         ax.legend()
         centered_plot(fig, "Figure 5. Raw and smoothed histogram.")
 
     with st.expander("DoG Visualization", expanded=False):
-        fig, ax = plt.subplots(figsize=(10, 4))
+        fig, ax = plt.subplots(figsize=(10,4))
         ax.plot(smooth_dog, color='green', label='Smoothed DoG (σ=1.5)')
         ax.grid(alpha=0.3, linestyle='--', linewidth=0.5)
         ax.legend()
-        centered_plot(fig, "Figure 6. Difference of Gaussian (DoG) visualization.")
+        centered_plot(fig, "Figure 6. Difference of Gaussian (DoG) Visualization.")
 
     with st.expander("Segmentation and Object Masks", expanded=False):
         centered_visual(ground, "Figure 7. Ground threshold mask.")
