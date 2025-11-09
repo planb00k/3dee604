@@ -93,32 +93,28 @@ def load_depth_model():
     model = AutoModelForDepthEstimation.from_pretrained(model_id)
     return processor, model
 
-# -------- FIXED vertical text (safe + no cutoff) ----------
+# -------- Fixed vertical text ----------
 def vertical_text(img, text, org, color=(255, 255, 0), angle=90):
-    """Draw vertical text safely — no clipping, no shape mismatch."""
+    """Draw vertical text safely — no clipping."""
     font = cv2.FONT_HERSHEY_SIMPLEX
     scale, thick = 1, 3
     (tw, th), _ = cv2.getTextSize(text, font, scale, thick)
 
     pad = 150
-    canvas_h = tw + pad * 2
-    canvas_w = th + pad * 4
+    canvas_h, canvas_w = tw + pad * 2, th + pad * 4
     canvas = np.zeros((canvas_h, canvas_w, 4), dtype=np.uint8)
 
     org_x = pad
     org_y = (canvas_h + th) // 2
     cv2.putText(canvas, text, (org_x, org_y), font, scale, (*color, 255), thick, cv2.LINE_AA)
 
-    out_w = canvas_w * 2
-    out_h = canvas_h * 2
     M = cv2.getRotationMatrix2D((canvas_w // 2, canvas_h // 2), angle, 1.0)
-    rot = cv2.warpAffine(canvas, M, (out_w, out_h), flags=cv2.INTER_LINEAR, borderValue=(0, 0, 0, 0))
+    rot = cv2.warpAffine(canvas, M, (canvas_w * 2, canvas_h * 2), flags=cv2.INTER_LINEAR, borderValue=(0, 0, 0, 0))
 
     x, y = org
     h, w = rot.shape[:2]
     x1, y1 = max(0, x), max(0, y)
     x2, y2 = min(x + w, img.shape[1]), min(y + h, img.shape[0])
-
     if x1 >= x2 or y1 >= y2:
         return img
 
@@ -128,7 +124,7 @@ def vertical_text(img, text, org, color=(255, 255, 0), angle=90):
     rot_y2 = rot_y1 + (y2 - y1)
 
     rot_slice = rot[rot_y1:rot_y2, rot_x1:rot_x2]
-    alpha = (rot_slice[:, :, 3:] / 255.0).astype(np.float32)
+    alpha = rot_slice[:, :, 3:] / 255.0
     rgb_rot = rot_slice[:, :, :3].astype(np.float32)
     roi = img[y1:y2, x1:x2].astype(np.float32)
     blended = (alpha * rgb_rot + (1 - alpha) * roi).astype(np.uint8)
@@ -146,9 +142,7 @@ if run_process and uploaded_file:
     inputs = processor(images=image, return_tensors="pt")
     with torch.no_grad():
         outputs = model(**inputs)
-    post_processed = processor.post_process_depth_estimation(
-        outputs, target_sizes=[(image.height, image.width)]
-    )
+    post_processed = processor.post_process_depth_estimation(outputs, target_sizes=[(image.height, image.width)])
     depth_result = post_processed[0]
     depth = depth_result.get("predicted_depth", depth_result.get("depth")).squeeze().cpu().numpy()
 
@@ -163,7 +157,6 @@ if run_process and uploaded_file:
     smoothed_hist1 = gaussian_filter1d(hist, sigma=3.76)
     smoothed_hist2 = gaussian_filter1d(hist, sigma=1.8)
     dog = smoothed_hist1 - smoothed_hist2
-    smooth_dog = 1.8 * gaussian_filter1d(dog, sigma=1.5)
 
     if relative_height_ratio == "low":
         low_bound = 110
@@ -179,7 +172,7 @@ if run_process and uploaded_file:
     minima_hist_rel = find_local_minima(mh_window)
     minima_hist = (minima_hist_rel + low_bound).astype(int) if minima_hist_rel.size > 0 else np.array([], dtype=int)
 
-    grad = np.gradient(smooth_dog)
+    grad = np.gradient(dog)
     zero_crossings = np.where(np.diff(np.sign(grad)))[0]
     minima_dog = np.array([i for i in zero_crossings if grad[i - 1] < 0 and grad[i + 1] > 0], dtype=int)
     minima_dog = minima_dog[(minima_dog >= low_bound) & (minima_dog < upper_bound)]
@@ -209,7 +202,6 @@ if run_process and uploaded_file:
         masks[0] = small_area_remover(ground)
         residual = np.zeros_like(gray)
 
-    # ---- Measurement ----
     def sad(camheight, depthmap, mask):
         if mask is None or np.count_nonzero(mask) == 0:
             h, w = depthmap.shape[:2]
@@ -244,20 +236,18 @@ if run_process and uploaded_file:
         cv2.rectangle(temp, tl, br, (0, 255, 0), 2)
         bboxes.append([tl, br])
 
-        # --- Smart Label Placement ---
-        img_w = temp.shape[1]
-        label_x = br[0] + 15
-        label_angle = 90
-        if label_x + 120 > img_w:  # if too close to right edge, move inside
-            label_x = max(tl[0] + 10, 0)
-        label_y = max(tl[1] + (br[1] - tl[1]) // 2 - 20, 20)
+        # --- Centered vertical label inside the box ---
+        center_x = (tl[0] + br[0]) // 2
+        center_y = (tl[1] + br[1]) // 2
+        label_x = max(tl[0] + 8, 0)
+        label_y = max(center_y - 40, 20)
 
         temp = vertical_text(
             temp,
             f"Length {int(y)} mm",
             (label_x, label_y),
             color=(255, 255, 0),
-            angle=label_angle
+            angle=90
         )
 
         cv2.putText(temp, f"Width {int(x)} mm", (tl[0] + 10, br[1] - 15),
@@ -280,7 +270,6 @@ if run_process and uploaded_file:
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 3)
         results[i]["Depth (mm)"] = int(temph)
 
-    # ---- Display ----
     st.header("Final Annotated Output")
     centered_visual(temp, "Figure 1. Final annotated image showing Width, Length, and Depth values.")
 
