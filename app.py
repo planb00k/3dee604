@@ -93,9 +93,9 @@ def load_depth_model():
     model = AutoModelForDepthEstimation.from_pretrained(model_id)
     return processor, model
 
-# -------- Fixed vertical text ----------
+# -------- Improved vertical text ----------
 def vertical_text(img, text, org, color=(255, 255, 0), angle=90):
-    """Draw vertical text safely — no clipping."""
+    """Draw vertical text safely inside box."""
     font = cv2.FONT_HERSHEY_SIMPLEX
     scale, thick = 1, 3
     (tw, th), _ = cv2.getTextSize(text, font, scale, thick)
@@ -157,6 +157,7 @@ if run_process and uploaded_file:
     smoothed_hist1 = gaussian_filter1d(hist, sigma=3.76)
     smoothed_hist2 = gaussian_filter1d(hist, sigma=1.8)
     dog = smoothed_hist1 - smoothed_hist2
+    smooth_dog = 1.8 * gaussian_filter1d(dog, sigma=1.5)
 
     if relative_height_ratio == "low":
         low_bound = 110
@@ -172,7 +173,7 @@ if run_process and uploaded_file:
     minima_hist_rel = find_local_minima(mh_window)
     minima_hist = (minima_hist_rel + low_bound).astype(int) if minima_hist_rel.size > 0 else np.array([], dtype=int)
 
-    grad = np.gradient(dog)
+    grad = np.gradient(smooth_dog)
     zero_crossings = np.where(np.diff(np.sign(grad)))[0]
     minima_dog = np.array([i for i in zero_crossings if grad[i - 1] < 0 and grad[i + 1] > 0], dtype=int)
     minima_dog = minima_dog[(minima_dog >= low_bound) & (minima_dog < upper_bound)]
@@ -236,11 +237,9 @@ if run_process and uploaded_file:
         cv2.rectangle(temp, tl, br, (0, 255, 0), 2)
         bboxes.append([tl, br])
 
-        # --- Perfectly placed vertical Length label (inside, centered) ---
-        box_height = br[1] - tl[1]
-        box_width = br[0] - tl[0]
-        label_x = tl[0] + int(box_width * 0.07)
-        label_y = tl[1] + int(box_height / 2) - 40
+        # --- Perfect Length label inside box ---
+        label_x = tl[0] + int((br[0] - tl[0]) * 0.4)
+        label_y = tl[1] + int((br[1] - tl[1]) * 0.3)
 
         temp = vertical_text(
             temp,
@@ -281,6 +280,35 @@ if run_process and uploaded_file:
 
     df = pd.DataFrame(results)
     st.dataframe(df.style.hide(axis='index').set_properties(**{'font-size': '16px'}), use_container_width=True)
+
+    st.markdown("---")
+    st.header("Intermediate Visualizations")
+
+    with st.expander("Original and Depth Representations", expanded=False):
+        centered_visual(initial_image, "Figure 2. Original RGB image.")
+        centered_visual(depth_gray, "Figure 3. Grayscale depth map.")
+        centered_visual(depth_color, "Figure 4. Colorized depth map (magma colormap).")
+
+    with st.expander("Depth Intensity Histogram & Smoothed", expanded=False):
+        fig, ax = plt.subplots(figsize=(8, 3))
+        ax.plot(hist, label="Raw Histogram", alpha=0.6)
+        ax.plot(smoothed_hist, label="Gaussian Smoothed (σ=1.89)", color='red', linewidth=2)
+        ax.legend()
+        centered_plot(fig, "Figure 5. Raw and smoothed histogram.")
+
+    with st.expander("DoG Visualization", expanded=False):
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.plot(smooth_dog, color='green', label='Smoothed DoG (σ=1.5)')
+        ax.grid(alpha=0.3, linestyle='--', linewidth=0.5)
+        ax.legend()
+        centered_plot(fig, "Figure 6. Difference of Gaussian (DoG) visualization.")
+
+    with st.expander("Segmentation and Object Masks", expanded=False):
+        centered_visual(ground, "Figure 7. Ground threshold mask.")
+        for key, mask in sorted(masks.items(), key=lambda x: x[0]):
+            mask_bgr = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+            centered_visual(mask_bgr, f"Figure 8.{key+1} Object Mask {key+1}.")
+        centered_visual(residual, "Figure 9. Residual/background mask.")
 
 elif run_process and not uploaded_file:
     st.warning("Please upload an image before running the measurement.")
