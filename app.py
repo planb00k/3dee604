@@ -53,34 +53,41 @@ def safe_kmeans_centers(points, n_clusters, low=0, high=255):
     centers = np.sort(kmeans.cluster_centers_.reshape(-1))
     return centers
 
-def centered_visual(img_array, caption=None, width=550):
+# ✅ Responsive centered visual function
+def centered_visual(img_array, caption=None, width="100%"):
     if isinstance(img_array, np.ndarray):
         img_pil = Image.fromarray(cv2.cvtColor(img_array, cv2.COLOR_BGR2RGB))
     else:
         img_pil = img_array
+
     buffered = io.BytesIO()
     img_pil.save(buffered, format="PNG")
     img_b64 = base64.b64encode(buffered.getvalue()).decode()
+
     html = f"""
-    <div style="display:flex; flex-direction:column; align-items:center; margin-bottom:40px;">
-        <img src="data:image/png;base64,{img_b64}" style="width:{width}px; border-radius:6px;">
-        <div style="text-align:left; width:{width}px; margin-top:6px;">
+    <div style="display:flex; flex-direction:column; align-items:center; margin-bottom:30px; width:100%;">
+        <img src="data:image/png;base64,{img_b64}" 
+             style="max-width:{width}; height:auto; border-radius:8px; box-shadow:0 2px 6px rgba(0,0,0,0.2);">
+        <div style="text-align:left; width:90%; max-width:900px; margin-top:8px;">
             <p style="font-size:16px; font-weight:600;">{caption or ''}</p>
         </div>
     </div>
     """
     st.markdown(html, unsafe_allow_html=True)
 
-def centered_plot(fig, caption, width=700):
+# ✅ Responsive centered plot function
+def centered_plot(fig, caption, width="100%"):
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight", dpi=150)
     buf.seek(0)
     img_b64 = base64.b64encode(buf.read()).decode()
     plt.close(fig)
+
     html = f"""
-    <div style="display:flex; flex-direction:column; align-items:center; margin-bottom:40px;">
-        <img src="data:image/png;base64,{img_b64}" style="width:{width}px; border-radius:6px;">
-        <div style="text-align:left; width:{width}px; margin-top:6px;">
+    <div style="display:flex; flex-direction:column; align-items:center; margin-bottom:30px; width:100%;">
+        <img src="data:image/png;base64,{img_b64}" 
+             style="max-width:{width}; height:auto; border-radius:8px; box-shadow:0 2px 6px rgba(0,0,0,0.2);">
+        <div style="text-align:left; width:90%; max-width:900px; margin-top:8px;">
             <p style="font-size:16px; font-weight:600;">{caption or ''}</p>
         </div>
     </div>
@@ -96,7 +103,6 @@ def load_depth_model():
 
 # --- Always-visible vertical text (letter-by-letter) ---
 def vertical_text(img, text, org, color=(255, 255, 0)):
-    """Draw vertical text letter-by-letter, always visible."""
     x, y = org
     font = cv2.FONT_HERSHEY_SIMPLEX
     scale, thickness = 0.9, 2
