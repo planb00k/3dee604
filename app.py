@@ -61,10 +61,10 @@ def centered_visual(img_array, caption=None, width=550):
     img_pil.save(buffered, format="PNG")
     img_b64 = base64.b64encode(buffered.getvalue()).decode()
     html = f"""
-    <div style="display:flex; flex-direction:column; align-items:center; margin-bottom:40px;">
+    <div style="display:flex; flex-direction:column; align-items:center; margin-bottom:24px;">
         <img src="data:image/png;base64,{img_b64}" style="width:{width}px; border-radius:6px;">
         <div style="text-align:left; width:{width}px; margin-top:6px;">
-            <p style="font-size:16px; font-weight:600;">{caption or ''}</p>
+            <p style="font-size:14px; font-weight:600;">{caption or ''}</p>
         </div>
     </div>
     """
@@ -77,10 +77,10 @@ def centered_plot(fig, caption, width=700):
     img_b64 = base64.b64encode(buf.read()).decode()
     plt.close(fig)
     html = f"""
-    <div style="display:flex; flex-direction:column; align-items:center; margin-bottom:40px;">
+    <div style="display:flex; flex-direction:column; align-items:center; margin-bottom:24px;">
         <img src="data:image/png;base64,{img_b64}" style="width:{width}px; border-radius:6px;">
         <div style="text-align:left; width:{width}px; margin-top:6px;">
-            <p style="font-size:16px; font-weight:600;">{caption or ''}</p>
+            <p style="font-size:14px; font-weight:600;">{caption or ''}</p>
         </div>
     </div>
     """
@@ -93,27 +93,33 @@ def load_depth_model():
     model = AutoModelForDepthEstimation.from_pretrained(model_id)
     return processor, model
 
-# --- Final fixed vertical text (no clipping) ---
+# --- robust vertical text (compact & non-clipping) ---
 def vertical_text(img, text, org, color=(255, 255, 0), angle=90):
+    # compact canvas sized proportional to text to avoid clipping
     font = cv2.FONT_HERSHEY_SIMPLEX
-    scale, thick = 0.9, 2
+    scale, thick = 0.85, 2
     (tw, th), _ = cv2.getTextSize(text, font, scale, thick)
-    canvas_h = tw + 40
-    canvas_w = th * 3
+    canvas_h = max(30, tw + 30)
+    canvas_w = max(30, th * 3)
     canvas = np.zeros((canvas_h, canvas_w, 4), dtype=np.uint8)
-    cv2.putText(canvas, text, (10, tw // 2 + th // 2), font, scale, (*color, 255), thick, cv2.LINE_AA)
+    # put text centered horizontally on canvas, vertically roughly center
+    text_x = 8
+    text_y = canvas_h // 2 + th // 2
+    cv2.putText(canvas, text, (text_x, text_y), font, scale, (*color, 255), thick, cv2.LINE_AA)
+    # rotate around canvas center
     M = cv2.getRotationMatrix2D((canvas_w // 2, canvas_h // 2), angle, 1.0)
-    rot = cv2.warpAffine(canvas, M, (canvas_w, canvas_h), flags=cv2.INTER_LINEAR, borderValue=(0, 0, 0, 0))
+    rot = cv2.warpAffine(canvas, M, (canvas_w, canvas_h), flags=cv2.INTER_LINEAR, borderValue=(0,0,0,0))
     x, y = org
     h, w = rot.shape[:2]
+    # compute paste region clipped to image
     y1, y2 = max(0, y), min(y + h, img.shape[0])
     x1, x2 = max(0, x), min(x + w, img.shape[1])
     if y1 >= y2 or x1 >= x2:
         return img
-    roi = img[y1:y2, x1:x2]
-    rot_crop = rot[0:y2 - y1, 0:x2 - x1]
-    alpha = rot_crop[:, :, 3:] / 255.0
-    img[y1:y2, x1:x2] = (alpha * rot_crop[:, :, :3] + (1 - alpha) * roi).astype(np.uint8)
+    roi = img[y1:y2, x1:x2].astype(np.float32)
+    rot_crop = rot[0:y2-y1, 0:x2-x1].astype(np.float32)
+    alpha = rot_crop[:,:,3:]/255.0
+    img[y1:y2, x1:x2] = (alpha * rot_crop[:,:,:3] + (1-alpha) * roi).astype(np.uint8)
     return img
 
 # ---------------- Run Process ----------------
@@ -122,38 +128,47 @@ if run_process and uploaded_file:
 
     image = Image.open(uploaded_file)
     initial_image = np.array(image.convert("RGB"))
+
+    # load model
     processor, model = load_depth_model()
     inputs = processor(images=image, return_tensors="pt")
     with torch.no_grad():
         outputs = model(**inputs)
     post_processed = processor.post_process_depth_estimation(outputs, target_sizes=[(image.height, image.width)])
-    depth = post_processed[0]["predicted_depth"].squeeze().cpu().numpy()
+    depth_result = post_processed[0]
+    # depth as float map (meters or scaled values depending on model) -- keep as float
+    depth = depth_result.get("predicted_depth", depth_result.get("depth")).squeeze().cpu().numpy().astype(float)
 
+    # normalize copies for display only
     depth_norm = (depth - depth.min()) / (depth.max() - depth.min() + 1e-9)
     depth_gray = (depth_norm * 255).astype(np.uint8)
     depth_color = (plt.cm.magma(depth_norm)[:, :, :3] * 255).astype(np.uint8)
     depth_color = cv2.cvtColor(depth_color, cv2.COLOR_RGB2BGR)
-    gray = cv2.cvtColor(depth_color, cv2.COLOR_BGR2GRAY)
 
+    # compute histogram / DoG
+    gray = cv2.cvtColor(depth_color, cv2.COLOR_BGR2GRAY)
     hist = cv2.calcHist([gray], [0], None, [256], [0, 256]).flatten()
     smoothed_hist = gaussian_filter1d(hist, sigma=1.89)
     smoothed_hist1 = gaussian_filter1d(hist, sigma=3.76)
     smoothed_hist2 = gaussian_filter1d(hist, sigma=1.8)
     dog = smoothed_hist1 - smoothed_hist2
     smooth_dog = 1.8 * gaussian_filter1d(dog, sigma=1.5)
+
     low_bound = {"low": 110, "med": 100, "high": 80, "vhigh": 60}[relative_height_ratio]
     upper_bound = 255
 
-    minima_hist_rel = find_local_minima(smoothed_hist[low_bound:upper_bound])
+    mh_window = smoothed_hist[low_bound:upper_bound]
+    minima_hist_rel = find_local_minima(mh_window)
     minima_hist = (minima_hist_rel + low_bound).astype(int) if minima_hist_rel.size > 0 else np.array([], dtype=int)
     grad = np.gradient(smooth_dog)
     zero_crossings = np.where(np.diff(np.sign(grad)))[0]
-    minima_dog = np.array([i for i in zero_crossings if grad[i - 1] < 0 and grad[i + 1] > 0], dtype=int)
+    minima_dog = np.array([i for i in zero_crossings if grad[i-1] < 0 and grad[i+1] > 0], dtype=int)
     minima_dog = minima_dog[(minima_dog >= low_bound) & (minima_dog < upper_bound)]
+
     n_clusters = int(max(1, nom_of_objects))
     centers_hist = safe_kmeans_centers(minima_hist, n_clusters, low=low_bound, high=upper_bound)
     centers_dog = safe_kmeans_centers(minima_dog, n_clusters, low=low_bound, high=upper_bound)
-    centers_mid = np.sort((np.array(centers_hist) + np.array(centers_dog)) / 2.0).astype(int)
+    centers_mid = np.sort((np.array(centers_hist) + np.array(centers_dog))/2.0).astype(int)
 
     masks = {}
     ground_threshold = int(centers_mid[0]) if len(centers_mid) > 0 else low_bound
@@ -175,53 +190,132 @@ if run_process and uploaded_file:
         masks[0] = small_area_remover(ground)
         residual = np.zeros_like(gray)
 
+    # helper to compute bbox from mask
     def sad(depthmap, mask):
         if mask is None or np.count_nonzero(mask) == 0:
             h, w = depthmap.shape[:2]
             return w, h, (0, 0), (w - 1, h - 1)
-        corners = cv2.goodFeaturesToTrack(mask, 10, 0.05, 50)
+        corners = cv2.goodFeaturesToTrack((mask>0).astype(np.uint8), 20, 0.01, 5)
         if corners is None:
             h, w = depthmap.shape[:2]
             return w, h, (0, 0), (w - 1, h - 1)
         corners = np.int32(corners)
-        x_min, y_min = np.min(corners[:, :, 0]), np.min(corners[:, :, 1])
-        x_max, y_max = np.max(corners[:, :, 0]), np.max(corners[:, :, 1])
+        x_min, y_min = np.min(corners[:,:,0]), np.min(corners[:,:,1])
+        x_max, y_max = np.max(corners[:,:,0]), np.max(corners[:,:,1])
         return x_max - x_min, y_max - y_min, (x_min, y_min), (x_max, y_max)
 
     def view(dx, dy, px, py, camh=300, f=5.42, viewport=[6.144, 8.6], cx=0.82, cy=0.79):
         tx, ty = (dx / px) * viewport[1], (dy / py) * viewport[0]
         return [cx * (camh / f) * tx, cy * (camh / f) * ty]
 
-    temp, results, bboxes = depth_color.copy(), [], []
+    def mean_mask_depth(depth_map, mask):
+        if mask is None or np.count_nonzero(mask) == 0:
+            return float(depth_map.mean())
+        m = (mask>0)
+        if np.count_nonzero(m) == 0:
+            return float(depth_map.mean())
+        return float(np.mean(depth_map[m]))
+
+    temp_vis = depth_color.copy()
+    results = []
+    bboxes = []
+    mean_depths = []
+
+    # compute bounding boxes and mean depth for each object mask
     for i in range(n_clusters):
         mask_i = masks.get(i, np.zeros_like(gray))
-        dx, dy, tl, br = sad(temp, mask_i)
-        x, y = view(dx, dy, px=initial_image.shape[0], py=initial_image.shape[1], camh=camh)
-        cv2.rectangle(temp, tl, br, (0, 255, 0), 2)
-        bboxes.append([tl, br])
+        dx, dy, tl, br = sad(depth_gray:=depth_gray if 'depth_gray' in locals() else gray, mask_i)
+        bboxes.append((tl, br))
+        md = mean_mask_depth(depth, mask_i)
+        mean_depths.append(md)
 
-        # --- Length label properly left and visible ---
-        box_width = br[0] - tl[0]
-        box_height = br[1] - tl[1]
-        label_x = tl[0] + int(box_width * 0.1)
-        label_y = tl[1] + int(box_height * 0.45)
-        temp = vertical_text(temp, f"Length {int(y)} mm", (label_x, label_y), color=(255, 255, 0), angle=90)
+    # If we have multiple objects, pick the reference as the one with smallest mean depth (closest)
+    # (If that's not the intended reference, user should supply which object is reference)
+    mean_depths_arr = np.array(mean_depths) if len(mean_depths)>0 else np.array([float(depth.mean())])
+    ref_idx = int(np.argmin(mean_depths_arr)) if len(mean_depths_arr)>0 else 0
+    ref_mean = float(mean_depths_arr[ref_idx])
 
-        # Width
-        cv2.putText(temp, f"Width {int(x)} mm", (tl[0] + 10, br[1] - 15),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 3)
-        results.append({"Object": i + 1, "Width (mm)": int(x), "Length (mm)": int(y)})
+    # For scaling: use dynamic range between ref_mean and the max mean among objects (avoid 0)
+    max_mean = float(np.max(mean_depths_arr)) if len(mean_depths_arr)>0 else ref_mean
+    denom = (max_mean - ref_mean) if (max_mean - ref_mean) != 0 else 1.0
 
-    # Draw Depth last (on top)
+    # Draw boxes and labels. We'll compute Depth(mm) per object using proportional mapping to ref_h.
+    for i in range(n_clusters):
+        mask_i = masks.get(i, np.zeros_like(gray))
+        dx, dy, tl, br = sad(depth, mask_i)
+        # view uses pixel dims; px,py should be image width/height (swap to match previous usage)
+        x_mm, y_mm = view(dx, dy, px=initial_image.shape[1], py=initial_image.shape[0], camh=camh)
+        cv2.rectangle(temp_vis, tl, br, (0,255,0), 2)
+
+        # --- Length: shifted far left (0.10) and fully visible ---
+        box_w = br[0] - tl[0]
+        box_h = br[1] - tl[1]
+        label_x = tl[0] + max(6, int(box_w * 0.1))   # more left
+        label_y = tl[1] + int(box_h * 0.45)
+        temp_vis = vertical_text(temp_vis, f"Length {int(y_mm)} mm", (label_x, label_y), color=(255,255,0), angle=90)
+
+        # Width label (bottom-left inside box)
+        w_label_x = tl[0] + 8
+        w_label_y = br[1] - 10
+        cv2.putText(temp_vis, f"Width {int(x_mm)} mm", (w_label_x, w_label_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0,255,0), 2, cv2.LINE_AA)
+
+        # Depth calculation: proportional to difference in mean depth vs reference
+        md = mean_depths_arr[i]
+        # If md <= ref_mean, object is closer or same: set small positive depth (avoid negative)
+        relative = (md - ref_mean) / denom
+        # clamp and convert to mm: reference height corresponds to relative==1 mapping -> ref_h
+        if relative <= 0:
+            depth_mm = int(max(1, ref_h * 0.2))  # something small but visible
+        else:
+            depth_mm = int(relative * ref_h)
+
+        # store
+        results.append({"Object": i+1, "Width (mm)": int(x_mm), "Length (mm)": int(y_mm), "Depth (mm)": int(depth_mm)})
+
+    # Draw Depth labels last (on top)
     for i, (tl, br) in enumerate(bboxes):
-        cv2.putText(temp, f"Depth {ref_h} mm", (br[0] - 140, tl[1] + 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 3)
+        depth_mm = results[i]["Depth (mm)"] if i < len(results) else int(ref_h)
+        # place depth label top-right inside box
+        depth_x = max(tl[0]+10, br[0]-150)
+        depth_y = tl[1] + 28
+        cv2.putText(temp_vis, f"Depth {depth_mm} mm", (depth_x, depth_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255,255,0), 2, cv2.LINE_AA)
 
+    # ---- Display ----
     st.header("Final Annotated Output")
-    centered_visual(temp, "Figure 1. Annotated Output")
+    centered_visual(temp_vis, "Figure 1. Final annotated image with Width/Length/Depth")
 
+    # results table
     df = pd.DataFrame(results)
-    st.dataframe(df.style.hide(axis='index').set_properties(**{'font-size': '16px'}), use_container_width=True)
+    st.dataframe(df.style.hide(axis='index').set_properties(**{'font-size':'14px'}), use_container_width=True)
+
+    # intermediate viz
+    st.markdown("---")
+    st.header("Intermediate Visualizations")
+    with st.expander("Original and Depth Representations", expanded=False):
+        centered_visual(initial_image, "Original RGB image")
+        centered_visual(depth_gray, "Grayscale depth map")
+        centered_visual(depth_color, "Colorized depth map (magma)")
+
+    with st.expander("Histogram & DoG", expanded=False):
+        fig, ax = plt.subplots(figsize=(8,3))
+        ax.plot(hist, label="Raw histogram", alpha=0.6)
+        ax.plot(smoothed_hist, label="Smoothed", linewidth=2)
+        ax.legend()
+        centered_plot(fig, "Raw and smoothed histogram")
+
+        fig, ax = plt.subplots(figsize=(10,3))
+        ax.plot(smooth_dog, label="Smoothed DoG")
+        ax.legend()
+        centered_plot(fig, "DoG curve")
+
+    with st.expander("Segmentation & Masks", expanded=False):
+        centered_visual(ground, "Ground threshold mask")
+        for k, m in sorted(masks.items()):
+            mask_bgr = cv2.cvtColor((m).astype(np.uint8), cv2.COLOR_GRAY2BGR)
+            centered_visual(mask_bgr, f"Object mask {k+1}")
+        centered_visual(residual, "Residual/background mask")
 
 elif run_process and not uploaded_file:
     st.warning("Please upload an image before running the measurement.")
